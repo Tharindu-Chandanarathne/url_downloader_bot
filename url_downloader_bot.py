@@ -341,66 +341,6 @@ class URLDownloaderBot:
                 except Exception as e:
                     logger.error(f"Error removing file: {str(e)}")
 
-    async def download_file(self, url, file_path, status_message):
-        try:
-            start_time = time.time()
-            last_update_time = 0
-
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as response:
-                    if response.status != 200:
-                        await status_message.edit_text(f"Download failed with status {response.status}")
-                        return False
-
-                    total_size = int(response.headers.get('content-length', 0))
-                    downloaded = 0
-
-                    with open(file_path, 'wb') as f:
-                        async for chunk in response.content.iter_chunked(8192):
-                            if chunk:
-                                f.write(chunk)
-                                downloaded += len(chunk)
-                                now = time.time()
-                                
-                                if now - last_update_time >= 0.5:
-                                    progress = (downloaded / total_size) * 100
-                                    elapsed_time = now - start_time
-                                    speed = downloaded / elapsed_time if elapsed_time > 0 else 0
-                                    eta = int((total_size - downloaded) / speed) if speed > 0 else 0
-
-                                    # Create progress bar
-                                    progress_bars = 10
-                                    filled = int(progress / (100 / progress_bars))
-                                    progress_bar = "■" * filled + "□" * (progress_bars - filled)
-
-                                    status_text = (
-                                        f"Downloading: {progress:.2f}%\n"
-                                        f"[{progress_bar}]\n"
-                                        f"{downloaded / 1024 / 1024:.2f} MB of {total_size / 1024 / 1024:.2f} MB\n"
-                                        f"Speed: {speed / 1024 / 1024:.2f} MB/sec\n"
-                                        f"ETA: {eta}s"
-                                    )
-                                    
-                                    try:
-                                        await status_message.edit_text(status_text)
-                                    except:
-                                        pass
-
-                                    last_update_time = now
-
-            download_time = int(time.time() - start_time)
-            await status_message.edit_text(
-                f"Download finish in {download_time}s.\n\n"
-                f"File: {os.path.basename(file_path)}\n\n"
-                "Now uploading to Telegram..."
-            )
-            return True
-            
-        except Exception as e:
-            logger.error(f"Download error: {str(e)}")
-            await status_message.edit_text(f"Download error: {str(e)}")
-            return False
-
     # [Keep your existing methods for handle_url, button_callback, download_file, etc.]
 
     def run(self):
