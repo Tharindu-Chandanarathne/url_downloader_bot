@@ -1,3 +1,4 @@
+import asyncio
 import os
 import logging
 import sys
@@ -70,43 +71,105 @@ class URLDownloaderBot:
             reply_markup=reply_markup
         )
 
-    async def update_progress(self, current, total, status_message, start_time, is_upload=False):
-        try:
-            now = time.time()
-            elapsed_time = now - start_time
-            if elapsed_time == 0:
-                elapsed_time = 0.1
+    async def monitor_upload_progress(self, original_size, temp_upload_path, status_message):
+        """Monitor upload progress by checking file size"""
+        start_time = time.time()
+        last_update_time = 0
 
-            # Calculate progress
-            progress = (current / total) * 100 if total > 0 else 0
+        while os.path.exists(temp_upload_path):
+            current_time = time.time()
+            if current_time - last_update_time >= 0.5:  # Update every 0.5 seconds
+                # Calculate remaining size
+                remaining_size = original_size - os.path.getsize(temp_upload_path)
+                uploaded_size = original_size - remaining_size
+                
+                # Calculate progress
+                progress = (uploaded_size / original_size) * 100
+                elapsed_time = current_time - start_time
+                speed = uploaded_size / elapsed_time if elapsed_time > 0 else 0
+                eta = int(remaining_size / speed) if speed > 0 else 0
+
+                # Create progress bar
+                progress_bars = 10
+                filled = int(progress / (100 / progress_bars))
+                progress_bar = "■" * filled + "□" * (progress_bars - filled)
+
+                status_text = (
+                    f"Uploading: {progress:.2f}%\n"
+                    f"[{progress_bar}]\n"
+                    f"{uploaded_size / 1024 / 1024:.2f} MB of {original_size / 1024 / 1024:.2f} MB\n"
+                    f"Speed: {speed / 1024 / 1024:.2f} MB/sec\n"
+                    f"ETA: {eta}s"
+                )
+                
+                try:
+                    await status_message.edit_text(status_text)
+                except:
+                    pass
+
+                last_update_time = current_time
             
-            # Calculate speed
-            speed = current / elapsed_time
+            await asyncio.sleep(0.1)  # Small delay to prevent high CPU usage
 
-            # Calculate ETA
-            if speed > 0:
-                eta = (total - current) / speed
+    async def download_and_send(self, message, url, filename):
+        status_message = await message.reply_text("⏳ Preparing download...")
+        download_path = None
+        temp_path = None
+
+        try:
+            # Create download path
+            download_path = os.path.join('downloads', filename)
+
+            # Download with progress
+            if await self.download_file(url, download_path, status_message):
+                try:
+                    file_size = os.path.getsize(download_path)
+
+                    # Create a temporary file for monitoring upload progress
+                    temp_path = download_path + ".temp"
+                    with open(download_path, 'rb') as src, open(temp_path, 'wb') as dest:
+                        dest.write(src.read())
+
+                    # Start progress monitoring in background
+                    asyncio.create_task(self.monitor_upload_progress(
+                        file_size, temp_path, status_message
+                    ))
+
+                    # Send the file
+                    with open(download_path, 'rb') as f:
+                        await message.reply_document(
+                            document=f,
+                            filename=filename,
+                            caption="Here's your file! 📁",
+                            write_timeout=3600,
+                            read_timeout=3600
+                        )
+
+                    await status_message.delete()
+
+                except Exception as upload_error:
+                    logger.error(f"Upload error: {str(upload_error)}")
+                    await status_message.edit_text(f"❌ Upload failed: {str(upload_error)}")
+
             else:
-                eta = 0
+                await status_message.edit_text("❌ Download failed")
 
-            # Create progress bar
-            bars = 10
-            full_bars = int(progress / (100 / bars))
-            empty_bars = bars - full_bars
-            bar = "■" * full_bars + "□" * empty_bars
-
-            # Format message
-            status_text = (
-                f"{'Uploading' if is_upload else 'Downloading'}: {progress:.2f}%\n"
-                f"[{bar}]\n"
-                f"{current / 1024 / 1024:.2f} MB of {total / 1024 / 1024:.2f} MB\n"
-                f"Speed: {speed / 1024 / 1024:.2f} MB/sec\n"
-                f"ETA: {int(eta)}s"
-            )
-
-            await status_message.edit_text(status_text)
         except Exception as e:
-            logger.error(f"Error updating progress: {str(e)}")
+            error_msg = f"❌ Error: {str(e)}"
+            logger.error(error_msg)
+            if status_message:
+                await status_message.edit_text(error_msg)
+
+        finally:
+            # Clean up files
+            for path in [download_path, temp_path]:
+                if path and os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except Exception as e:
+                        logger.error(f"Error removing file: {str(e)}")
+
+    # Keep your existing download_file method as is
 
     async def download_file(self, url, file_path, status_message):
         try:
