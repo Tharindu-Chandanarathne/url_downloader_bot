@@ -282,17 +282,13 @@ class URLDownloaderBot:
                 start_time = time.time()
                 last_update_time = 0
 
-                # Get bot username
-                bot_username = (await status_message.get_chat()).username or "urluploadxbot"
-
                 # Create upload status message
                 status_text = (
                     f"Uploading: 0%\n"
                     f"[□□□□□□□□□□]\n"
                     f"0 MB of {file_size / 1024 / 1024:.2f} MB\n"
                     f"Speed: 0 MB/sec\n"
-                    f"ETA: calculating...\n\n"
-                    f"Thanks for using @{bot_username}"
+                    f"ETA: calculating..."
                 )
                 await status_message.edit_text(status_text)
 
@@ -324,8 +320,7 @@ class URLDownloaderBot:
                                     f"[{progress_bar}]\n"
                                     f"{uploaded_size / 1024 / 1024:.2f} MB of {file_size / 1024 / 1024:.2f} MB\n"
                                     f"Speed: {speed / 1024 / 1024:.2f} MB/sec\n"
-                                    f"ETA: {int(eta)}s\n\n"
-                                    f"Thanks for using @{bot_username}"
+                                    f"ETA: {int(eta)}s"
                                 )
                                 
                                 try:
@@ -365,7 +360,7 @@ class URLDownloaderBot:
                     os.remove(file_path)
                 except Exception as e:
                     logger.error(f"Error removing file: {str(e)}")
-                    
+
     def format_size(self, size):
         for unit in ['B', 'KB', 'MB', 'GB']:
             if size < 1024:
