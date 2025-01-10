@@ -1,295 +1,206 @@
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-import requests
 import os
-import urllib.parse
-from pathlib import Path
-import asyncio
+from urllib.parse import urlparse, unquote
 import aiohttp
-import logging
-import time
-import sys
-from dotenv import load_dotenv
-import gc
-import psutil
-import shutil
+from telegram import Update
+from telegram.ext import ContextTypes
+import re
+import mimetypes
+import asyncio
 
-class URLDownloaderBot:
-    def __init__(self, token: str, download_folder: str = "/tmp/downloads"):
-        self.token = token
-        self.download_folder = download_folder
-        os.makedirs(download_folder, exist_ok=True)
-        
-        # Setup logging
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler('bot.log'),
-                logging.StreamHandler()
-            ]
-        )
-        self.logger = logging.getLogger(__name__)
-        
-        # Clean up old files on start
-        self.cleanup_old_files()
-
-    def cleanup_old_files(self):
-        """Clean up files older than 1 hour"""
-        try:
-            # Force garbage collection
-            gc.collect()
-            
-            current_time = time.time()
-            for filename in os.listdir(self.download_folder):
-                filepath = os.path.join(self.download_folder, filename)
-                if os.path.isfile(filepath):
-                    if current_time - os.path.getmtime(filepath) > 900:  # 15 minutes
-                        os.remove(filepath)
-        except Exception as e:
-            self.logger.error(f"Cleanup error: {str(e)}")
-
-    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handler for /start command"""
-        try:
-            self.logger.info(f"Start command received from user {update.effective_user.id}")
-            welcome_message = (
-                "Welcome! 👋\n\n"
-                "I can help you download files from direct links.\n"
-                "Just send me any direct download link and I'll:\n"
-                "1. Download the file\n"
-                "2. Send it back to you on Telegram\n\n"
-                "Commands:\n"
-                "/start - Show this message\n"
-                "/help - Get help information\n"
-                "/health - Check bot status"
+async def handle_url(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Enhanced handler for URL messages with improved validation, error handling,
+    and user feedback.
+    """
+    message = update.message
+    url = message.text.strip()
+    status_message = None
+    file_path = None
+    
+    try:
+        # Enhanced URL validation
+        if not self._is_valid_url(url):
+            await message.reply_text(
+                "⚠️ Invalid URL format. Please send a valid direct download URL.\n"
+                "Supported protocols: HTTP, HTTPS"
             )
-            await update.message.reply_text(welcome_message)
-            self.logger.info(f"Start command response sent to user {update.effective_user.id}")
-        except Exception as e:
-            self.logger.error(f"Error in start_command: {str(e)}")
-            await update.message.reply_text("An error occurred. Please try again later.")
-
-    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handler for /help command"""
-        try:
-            help_message = (
-                "How to use this bot:\n\n"
-                "1. Send any direct download link\n"
-                "2. Wait while I download and process the file\n"
-                "3. I'll send the file back to you on Telegram\n\n"
-                "Note: The link must be a direct download link"
-            )
-            await update.message.reply_text(help_message)
-        except Exception as e:
-            self.logger.error(f"Error in help_command: {str(e)}")
-            await update.message.reply_text("An error occurred. Please try again later.")
-
-    async def healthcheck_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handler for /health command"""
-        try:
-            process = psutil.Process(os.getpid())
-            memory_use = process.memory_info().rss / 1024 / 1024  # in MB
-            
-            status_message = (
-                "✅ Bot Status:\n"
-                f"Memory Usage: {memory_use:.1f} MB\n"
-                f"Uptime: {time.time() - process.create_time():.0f} seconds\n"
-                f"Downloads Directory: {self.download_folder}\n"
-                f"Files in download dir: {len(os.listdir(self.download_folder))}"
-            )
-            await update.message.reply_text(status_message)
-        except Exception as e:
-            self.logger.error(f"Error in healthcheck_command: {str(e)}")
-            await update.message.reply_text("Error checking health status")
-
-    async def check_file_size(self, url: str) -> int:
-        """Check file size before downloading"""
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.head(url, allow_redirects=True) as response:
-                    if response.status != 200:
-                        raise Exception(f"Failed to check file size: HTTP {response.status}")
-                    
-                    file_size = int(response.headers.get('Content-Length', 0))
-                    return file_size if file_size > 0 else -1
-        except Exception as e:
-            self.logger.error(f"Error checking file size: {str(e)}")
-            return -1
-
-    async def download_file(self, url: str, message_id: int) -> tuple[str, int]:
-        """Download file from URL using aiohttp"""
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                if response.status != 200:
-                    raise Exception(f"Failed to download: HTTP {response.status}")
-
-                content_disposition = response.headers.get('Content-Disposition')
-                if content_disposition and 'filename=' in content_disposition:
-                    filename = content_disposition.split('filename=')[1].strip('"\'')
-                else:
-                    clean_url = url.split('?')[0]
-                    filename = urllib.parse.unquote(os.path.basename(clean_url))
-                    if not filename:
-                        filename = f"file_{message_id}"
-                
-                # Remove any invalid characters from filename
-                invalid_chars = '<>:"/\\|?*'
-                for char in invalid_chars:
-                    filename = filename.replace(char, '')
-
-                # Ensure filename is safe and unique
-                safe_filename = Path(self.download_folder) / f"{message_id}_{filename}"
-                
-                # Download the file
-                with open(safe_filename, 'wb') as f:
-                    async for chunk in response.content.iter_chunked(8192):
-                        f.write(chunk)
-
-                return str(safe_filename), int(response.headers.get('Content-Length', 0))
-
-    async def handle_url(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handler for URL messages"""
-        message = update.message
-        url = message.text.strip()
-
-        # Basic URL validation
-        if not url.startswith(('http://', 'https://')):
-            await message.reply_text("Please send a valid direct download URL.")
             return
 
-        status_message = None
-        file_path = None
+        # Send initial status message
+        status_message = await message.reply_text(
+            "🔍 Analyzing URL...\n"
+            "Please wait while I check the file..."
+        )
 
+        # Check if URL is accessible
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.head(url, allow_redirects=True, timeout=10) as response:
+                    if response.status != 200:
+                        await status_message.edit_text(
+                            f"❌ URL is not accessible (Status: {response.status}).\n"
+                            "Please check if the link is valid and try again."
+                        )
+                        return
+                    
+                    # Get content type and suggested filename
+                    content_type = response.headers.get('content-type', 'application/octet-stream')
+                    content_disposition = response.headers.get('content-disposition')
+                    file_size = int(response.headers.get('content-length', 0))
+                    
+                    filename = self._get_filename(url, content_disposition, content_type)
+                    
+                    # Check file size
+                    if file_size > 2_147_483_648:  # 2GB
+                        readable_size = self._format_size(file_size)
+                        await status_message.edit_text(
+                            f"❌ File too large ({readable_size})\n"
+                            "Maximum allowed size: 2GB\n"
+                            "Please try a smaller file."
+                        )
+                        return
+                    
+                    # Update status with file info
+                    file_info = (
+                        f"📝 File name: {filename}\n"
+                        f"📦 Size: {self._format_size(file_size)}\n"
+                        f"📎 Type: {content_type}\n"
+                        f"⏳ Starting download..."
+                    )
+                    await status_message.edit_text(file_info)
+                    
+            except asyncio.TimeoutError:
+                await status_message.edit_text(
+                    "❌ Request timed out.\n"
+                    "The server took too long to respond. Please try again."
+                )
+                return
+            except aiohttp.ClientError as e:
+                await status_message.edit_text(
+                    f"❌ Connection error: {str(e)}\n"
+                    "Please check your URL and try again."
+                )
+                return
+
+        # Download the file with progress
         try:
-            # Send initial status message
-            status_message = await message.reply_text("🔍 Checking file size...")
+            file_path, download_success = await self.download_file(
+                url, message.message_id, status_message
+            )
             
-            # Check file size
-            file_size = await self.check_file_size(url)
-            
-            if file_size > 2_147_483_648:  # 2GB
-                await status_message.edit_text("❌ File too large (>2GB). Please try a smaller file.")
+            if not download_success:
+                await status_message.edit_text(
+                    "❌ Download failed.\n"
+                    "Please check the URL and try again."
+                )
                 return
             
-            if file_size > 0:
-                size_mb = file_size / 1024 / 1024
-                await status_message.edit_text(
-                    f"📦 File size: {size_mb:.1f}MB\n"
-                    f"⏳ Starting download..."
-                )
+            # Try primary upload with progress
+            upload_success = await self.upload_with_progress(
+                message, file_path, status_message
+            )
+            
+            if upload_success:
+                await status_message.delete()
             else:
-                await status_message.edit_text(
-                    "⚠️ Could not determine file size.\n"
-                    "⏳ Starting download anyway..."
-                )
-
-            # Download the file
-            file_path, _ = await self.download_file(url, message.message_id)
-            
-            # Upload to Telegram
-            await status_message.edit_text("✅ Download complete! Uploading to Telegram...")
-            
-            try:
-                with open(file_path, 'rb') as file:
-                    await message.reply_document(
-                        document=file,
-                        caption="Here's your file! 📁",
-                        write_timeout=1800,  # 30 minutes
-                        read_timeout=1800,   # 30 minutes
-                        connect_timeout=60   # 1 minute
-                    )
-                    await status_message.delete()
-            except Exception as upload_error:
-                self.logger.error(f"Primary upload failed: {str(upload_error)}")
-                
                 # Try alternative upload method
+                await status_message.edit_text(
+                    "⚠️ Primary upload method failed.\n"
+                    "Trying alternative method..."
+                )
                 try:
-                    await status_message.edit_text("⚠️ Retrying upload with alternative method...")
                     with open(file_path, 'rb') as file:
                         await message.reply_document(
                             document=file,
-                            filename=os.path.basename(file_path),
-                            caption="Here's your file! 📁",
+                            filename=filename,
+                            caption="📁 Here's your file!",
                             write_timeout=1800,
                             read_timeout=1800
                         )
                     await status_message.delete()
                 except Exception as alt_error:
                     self.logger.error(f"Alternative upload failed: {str(alt_error)}")
-                    await status_message.edit_text("❌ Upload failed. Please try again with a smaller file.")
-
-        except Exception as e:
-            error_message = f"Sorry, an error occurred: {str(e)}"
-            self.logger.error(f"Error processing URL {url}: {str(e)}")
-            if status_message:
-                await status_message.edit_text(error_message)
-            else:
-                await message.reply_text(error_message)
-        
-        finally:
-            # Clean up downloaded file
-            if file_path and os.path.exists(file_path):
-                try:
-                    os.remove(file_path)
-                except Exception as e:
-                    self.logger.error(f"Error removing file {file_path}: {str(e)}")
-
-    def run(self):
-        """Start the bot"""
-        try:
-            self.logger.info("Starting bot...")
+                    await status_message.edit_text(
+                        "❌ Upload failed.\n"
+                        "Please try again with a smaller file or contact support."
+                    )
+                    
+        except Exception as download_error:
+            self.logger.error(f"Download error for {url}: {str(download_error)}")
+            await status_message.edit_text(
+                "❌ Download failed.\n"
+                f"Error: {str(download_error)}"
+            )
             
-            # Create application
-            application = Application.builder().token(self.token).build()
-
-            # Add handlers
-            application.add_handler(CommandHandler("start", self.start_command))
-            application.add_handler(CommandHandler("help", self.help_command))
-            application.add_handler(CommandHandler("health", self.healthcheck_command))
-            application.add_handler(MessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                self.handle_url
-            ))
-
-            # Log handler registration
-            self.logger.info("Handlers registered successfully")
-
-            # Start polling
-            self.logger.info("Starting polling...")
-            application.run_polling(allowed_updates=Update.ALL_TYPES)
-            
-        except Exception as e:
-            self.logger.error(f"Error in run method: {str(e)}")
-            raise
-
-if __name__ == "__main__":
-    try:
-        # Load environment variables
-        load_dotenv()
-        
-        # Get bot token from environment variable
-        BOT_TOKEN = os.getenv('BOT_TOKEN')
-        if not BOT_TOKEN:
-            logging.error("No BOT_TOKEN found in environment variables!")
-            sys.exit(1)
-            
-        # Log successful token retrieval    
-        logging.info("BOT_TOKEN successfully loaded")
-        
-        # Create and run bot
-        bot = URLDownloaderBot(BOT_TOKEN)
-        
-        # Continuous operation with error handling
-        while True:
-            try:
-                logging.info("Starting bot instance...")
-                bot.run()
-            except Exception as e:
-                logging.error(f"Bot crashed: {str(e)}")
-                logging.info("Waiting 10 seconds before restart...")
-                time.sleep(10)
-                
     except Exception as e:
-        logging.critical(f"Fatal error: {str(e)}")
-        sys.exit(1)
+        error_msg = f"❌ An unexpected error occurred: {str(e)}"
+        self.logger.error(f"Error processing URL {url}: {str(e)}")
+        if status_message:
+            await status_message.edit_text(error_msg)
+        else:
+            await message.reply_text(error_msg)
+    
+    finally:
+        # Clean up downloaded file
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                self.logger.info(f"Cleaned up file: {file_path}")
+            except Exception as e:
+                self.logger.error(f"Error removing file {file_path}: {str(e)}")
+
+def _is_valid_url(self, url: str) -> bool:
+    """
+    Validate URL format and scheme.
+    """
+    try:
+        result = urlparse(url)
+        return all([
+            result.scheme in ('http', 'https'),
+            result.netloc,
+            len(url) < 2048  # Common URL length limit
+        ])
+    except:
+        return False
+
+def _get_filename(self, url: str, content_disposition: str = None, content_type: str = None) -> str:
+    """
+    Extract filename from URL, content disposition, or generate one based on content type.
+    """
+    filename = None
+    
+    # Try content disposition first
+    if content_disposition:
+        try:
+            filename = re.findall("filename=(.+)", content_disposition)[0].strip('"')
+        except:
+            pass
+    
+    # Try URL path
+    if not filename:
+        path = unquote(urlparse(url).path)
+        filename = os.path.basename(path)
+    
+    # Generate filename based on content type
+    if not filename and content_type:
+        ext = mimetypes.guess_extension(content_type.split(';')[0].strip())
+        if ext:
+            filename = f"download{ext}"
+    
+    # Fallback
+    if not filename:
+        filename = "download"
+    
+    # Sanitize filename
+    filename = re.sub(r'[^\w\-_\. ]', '', filename)
+    return filename[:255]  # Max filename length
+
+def _format_size(self, size: int) -> str:
+    """
+    Format file size in human-readable format.
+    """
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size < 1024:
+            return f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}TB"
