@@ -193,36 +193,22 @@ class URLDownloaderBot:
             
             # Download with progress
             if await self.download_file(url, file_path, status_message):
-                # Upload with progress
-                await status_message.edit_text("📤 Starting upload...")
-                upload_start_time = time.time()
-                last_update_time = 0
-                file_size = os.path.getsize(file_path)
-
-                async def upload_progress(current, total):
-                    nonlocal last_update_time
-                    now = time.time()
-                    if now - last_update_time >= 0.5:
-                        await self.update_progress(
-                            current,
-                            total,
-                            status_message,
-                            upload_start_time,
-                            is_upload=True
-                        )
-                        last_update_time = now
-
-                # Send file with progress
+                # Upload
+                await status_message.edit_text("📤 Uploading to Telegram...")
+                
                 with open(file_path, 'rb') as f:
-                    await message.reply_document(
-                        document=f,
-                        filename=filename,
-                        caption="Here's your file! 📁",
-                        write_timeout=1800,
-                        read_timeout=1800,
-                        progress=upload_progress
-                    )
-                await status_message.delete()
+                    try:
+                        await message.reply_document(
+                            document=f,
+                            filename=filename,
+                            caption="Here's your file! 📁",
+                            write_timeout=1800,
+                            read_timeout=1800
+                        )
+                        await status_message.delete()
+                    except Exception as upload_error:
+                        logger.error(f"Upload error: {str(upload_error)}")
+                        await status_message.edit_text(f"❌ Upload failed: {str(upload_error)}")
             else:
                 await status_message.edit_text("❌ Download failed")
 
