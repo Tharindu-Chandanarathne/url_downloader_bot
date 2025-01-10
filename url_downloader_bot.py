@@ -2,13 +2,16 @@ import os
 import logging
 import sys
 import time
-import math
+from datetime import datetime
 from urllib.parse import urlparse, unquote
 import aiohttp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import re
 from dotenv import load_dotenv
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy import Column, Integer, String, DateTime, BigInteger, Float
 
 # Configure logging
 logging.basicConfig(
@@ -17,6 +20,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Database setup
+Base = declarative_base()
+
+class Download(Base):
+    __tablename__ = 'downloads'
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(BigInteger)
+    filename = Column(String)
+    filesize = Column(BigInteger)
+    duration = Column(Float)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class User(Base):
+    __tablename__ = 'users'
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(BigInteger, unique=True)
+    username = Column(String)
+    first_seen = Column(DateTime, default=datetime.utcnow)
+    last_seen = Column(DateTime, default=datetime.utcnow)
+
 class URLDownloaderBot:
     def __init__(self):
         load_dotenv()
@@ -24,250 +49,69 @@ class URLDownloaderBot:
         if not self.token:
             logger.error("BOT_TOKEN not found!")
             sys.exit(1)
-        os.makedirs('downloads', exist_ok=True)
-        self.user_data = {}
-        self.download_states = {}
 
-    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("👋 Welcome! Send me a URL and I'll download it for you.")
+        # Database initialization
+        database_url = os.getenv('DATABASE_URL')
+        if not database_url:
+            logger.error("DATABASE_URL not found!")
+            sys.exit(1)
 
-    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("Send me a URL and I'll download it for you.")
-
-    async def handle_url(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        message = update.message
-        url = message.text.strip()
-        chat_id = str(message.chat_id)
-
-        if not url.startswith(('http://', 'https://')):
-            await message.reply_text("Please send a valid URL")
-            return
-
-        try:
-            parsed_url = urlparse(url)
-            default_filename = os.path.basename(unquote(parsed_url.path))
-            if not default_filename:
-                default_filename = 'download'
-        except:
-            default_filename = 'download'
-
-        self.user_data[chat_id] = {
-            'url': url,
-            'default_filename': default_filename
-        }
-
-        keyboard = [
-            [
-                InlineKeyboardButton("Use Default", callback_data="default"),
-                InlineKeyboardButton("Rename", callback_data="rename")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await message.reply_text(
-            f"Name: {default_filename}\n"
-            "How would you like to upload this?",
-            reply_markup=reply_markup
+        # Convert database URL to async format
+        self.db_url = database_url.replace('postgres://', 'postgresql+asyncpg://')
+        self.engine = create_async_engine(self.db_url, echo=True)
+        self.async_session = sessionmaker(
+            self.engine, class_=AsyncSession, expire_on_commit=False
         )
 
-    async def update_progress(self, current, total, status_message, start_time, is_upload=False):
+        os.makedirs('downloads', exist_ok=True)
+        self.user_data = {}
+
+    async def init_db(self):
+        """Initialize database tables"""
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    async def log_download(self, user_id: int, filename: str, filesize: int, duration: float):
+        """Log download to database"""
         try:
-            now = time.time()
-            elapsed_time = now - start_time
-            if elapsed_time == 0:
-                elapsed_time = 0.1
-
-            # Calculate progress
-            progress = (current / total) * 100 if total > 0 else 0
-            
-            # Calculate speed
-            speed = current / elapsed_time
-
-            # Calculate ETA
-            if speed > 0:
-                eta = (total - current) / speed
-            else:
-                eta = 0
-
-            # Create progress bar
-            bars = 10
-            full_bars = int(progress / (100 / bars))
-            empty_bars = bars - full_bars
-            bar = "■" * full_bars + "□" * empty_bars
-
-            # Format message
-            status_text = (
-                f"{'Uploading' if is_upload else 'Downloading'}: {progress:.2f}%\n"
-                f"[{bar}]\n"
-                f"{current / 1024 / 1024:.2f} MB of {total / 1024 / 1024:.2f} MB\n"
-                f"Speed: {speed / 1024 / 1024:.2f} MB/sec\n"
-                f"ETA: {int(eta)}s"
-            )
-
-            await status_message.edit_text(status_text)
-        except Exception as e:
-            logger.error(f"Error updating progress: {str(e)}")
-
-    async def download_file(self, url, file_path, status_message):
-        try:
-            start_time = time.time()
-            last_update_time = 0
-
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as response:
-                    if response.status != 200:
-                        await status_message.edit_text(f"Download failed with status {response.status}")
-                        return False
-
-                    total_size = int(response.headers.get('content-length', 0))
-                    downloaded = 0
-
-                    with open(file_path, 'wb') as f:
-                        async for chunk in response.content.iter_chunked(8192):
-                            if chunk:
-                                f.write(chunk)
-                                downloaded += len(chunk)
-                                now = time.time()
-                                
-                                if now - last_update_time >= 0.5:
-                                    await self.update_progress(
-                                        downloaded, 
-                                        total_size, 
-                                        status_message, 
-                                        start_time
-                                    )
-                                    last_update_time = now
-
-            return True
-        except Exception as e:
-            logger.error(f"Download error: {str(e)}")
-            await status_message.edit_text(f"Download error: {str(e)}")
-            return False
-
-    async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        query = update.callback_query
-        chat_id = str(query.message.chat_id)
-        await query.answer()
-
-        if chat_id not in self.user_data:
-            await query.edit_message_text("Session expired. Please send the URL again.")
-            return
-
-        url = self.user_data[chat_id]['url']
-        default_filename = self.user_data[chat_id]['default_filename']
-
-        if query.data == "default":
-            # Delete the message with buttons
-            await query.message.delete()
-            # Start download with default filename
-            await self.download_and_send(query.message, url, default_filename)
-            del self.user_data[chat_id]
-        elif query.data == "rename":
-            # Delete the message with buttons
-            await query.message.delete()
-            # Send new message asking for filename
-            rename_msg = await query.message.reply_text(
-                f"Current name: {default_filename}\n"
-                "Send me the new name for this file:"
-            )
-            self.user_data[chat_id]['waiting_for_name'] = True
-            self.user_data[chat_id]['rename_msg_id'] = rename_msg.message_id
-
-    async def handle_new_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        message = update.message
-        chat_id = str(message.chat_id)
-
-        if chat_id not in self.user_data or not self.user_data[chat_id].get('waiting_for_name'):
-            return
-
-        new_name = message.text.strip()
-        url = self.user_data[chat_id]['url']
-
-        # Clean filename
-        new_name = re.sub(r'[^\w\-_\. ]', '', new_name)
-        if not new_name:
-            await message.reply_text("Invalid filename. Please try again.")
-            return
-
-        # Delete the rename message if it exists
-        if 'rename_msg_id' in self.user_data[chat_id]:
-            try:
-                await context.bot.delete_message(
-                    chat_id=chat_id,
-                    message_id=self.user_data[chat_id]['rename_msg_id']
+            async with self.async_session() as session:
+                download = Download(
+                    user_id=user_id,
+                    filename=filename,
+                    filesize=filesize,
+                    duration=duration
                 )
-            except:
-                pass  # Message might already be deleted
-
-        await self.download_and_send(message, url, new_name)
-        del self.user_data[chat_id]
-
-    async def handle_new_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        message = update.message
-        chat_id = str(message.chat_id)
-
-        if chat_id not in self.user_data or not self.user_data[chat_id].get('waiting_for_name'):
-            return
-
-        new_name = message.text.strip()
-        url = self.user_data[chat_id]['url']
-
-        new_name = re.sub(r'[^\w\-_\. ]', '', new_name)
-        if not new_name:
-            await message.reply_text("Invalid filename. Please try again.")
-            return
-
-        await self.download_and_send(message, url, new_name)
-        del self.user_data[chat_id]
-
-    async def download_file(self, url, file_path, status_message):
-        try:
-            start_time = time.time()
-            last_update_time = 0
-
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as response:
-                    if response.status != 200:
-                        await status_message.edit_text(f"Download failed with status {response.status}")
-                        return False
-
-                    total_size = int(response.headers.get('content-length', 0))
-                    downloaded = 0
-
-                    with open(file_path, 'wb') as f:
-                        async for chunk in response.content.iter_chunked(8192):
-                            if chunk:
-                                f.write(chunk)
-                                downloaded += len(chunk)
-                                now = time.time()
-                                
-                                if now - last_update_time >= 0.5:
-                                    await self.update_progress(
-                                        downloaded, 
-                                        total_size, 
-                                        status_message, 
-                                        start_time
-                                    )
-                                    last_update_time = now
-
-            # Calculate total download time
-            download_time = int(time.time() - start_time)
-            filename = os.path.basename(file_path)
-            
-            # Show completion message
-            await status_message.edit_text(
-                f"Download finish in {download_time}s.\n\n"
-                f"File: {filename}\n\n"
-                "Now uploading to Telegram..."
-            )
-            return True
-            
+                session.add(download)
+                await session.commit()
         except Exception as e:
-            logger.error(f"Download error: {str(e)}")
-            await status_message.edit_text(f"Download error: {str(e)}")
-            return False
+            logger.error(f"Failed to log download: {str(e)}")
+
+    async def update_user(self, user_id: int, username: str):
+        """Update user information"""
+        try:
+            async with self.async_session() as session:
+                user = await session.get(User, user_id)
+                if user:
+                    user.username = username
+                    user.last_seen = datetime.utcnow()
+                else:
+                    user = User(
+                        user_id=user_id,
+                        username=username
+                    )
+                    session.add(user)
+                await session.commit()
+        except Exception as e:
+            logger.error(f"Failed to update user: {str(e)}")
+
+    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Start command handler"""
+        user = update.effective_user
+        await self.update_user(user.id, user.username)
+        await update.message.reply_text("👋 Welcome! Send me a URL and I'll download it for you.")
 
     async def download_and_send(self, message, url, filename):
+        start_time = time.time()
         status_message = await message.reply_text("⏳ Preparing download...")
         file_path = None
 
@@ -277,74 +121,32 @@ class URLDownloaderBot:
             # Download with progress
             if await self.download_file(url, file_path, status_message):
                 file_size = os.path.getsize(file_path)
-                uploaded_size = 0
-                chunk_size = 2048 * 1024  # 2MB chunks
-                start_time = time.time()
-                last_update_time = 0
+                
+                try:
+                    await status_message.edit_text("📤 Uploading to Telegram...")
+                    
+                    # Send file
+                    with open(file_path, 'rb') as f:
+                        await message.reply_document(
+                            document=f,
+                            filename=filename,
+                            caption="Here's your file! 📁"
+                        )
+                    
+                    # Log the download
+                    duration = time.time() - start_time
+                    await self.log_download(
+                        user_id=message.from_user.id,
+                        filename=filename,
+                        filesize=file_size,
+                        duration=duration
+                    )
+                    
+                    await status_message.delete()
 
-                # Create upload status message
-                status_text = (
-                    f"Uploading: 0%\n"
-                    f"[□□□□□□□□□□]\n"
-                    f"0 MB of {file_size / 1024 / 1024:.2f} MB\n"
-                    f"Speed: 0 MB/sec\n"
-                    f"ETA: calculating..."
-                )
-                await status_message.edit_text(status_text)
-
-                with open(file_path, 'rb') as f:
-                    try:
-                        # Split file into chunks and track progress
-                        while uploaded_size < file_size:
-                            current_time = time.time()
-                            chunk = f.read(chunk_size)
-                            if not chunk:
-                                break
-
-                            uploaded_size += len(chunk)
-                            
-                            # Update progress every 0.5 seconds
-                            if current_time - last_update_time >= 0.5:
-                                progress = (uploaded_size / file_size) * 100
-                                elapsed_time = current_time - start_time
-                                speed = uploaded_size / elapsed_time if elapsed_time > 0 else 0
-                                eta = ((file_size - uploaded_size) / speed) if speed > 0 else 0
-
-                                # Create progress bar
-                                progress_bars = 10
-                                filled = int(progress / (100 / progress_bars))
-                                progress_bar = "■" * filled + "□" * (progress_bars - filled)
-
-                                status_text = (
-                                    f"Uploading: {progress:.2f}%\n"
-                                    f"[{progress_bar}]\n"
-                                    f"{uploaded_size / 1024 / 1024:.2f} MB of {file_size / 1024 / 1024:.2f} MB\n"
-                                    f"Speed: {speed / 1024 / 1024:.2f} MB/sec\n"
-                                    f"ETA: {int(eta)}s"
-                                )
-                                
-                                try:
-                                    await status_message.edit_text(status_text)
-                                except:
-                                    pass
-
-                                last_update_time = current_time
-
-                        # Send the complete file
-                        with open(file_path, 'rb') as final_file:
-                            await message.reply_document(
-                                document=final_file,
-                                filename=filename,
-                                caption="Here's your file! 📁",
-                                write_timeout=1800,
-                                read_timeout=1800
-                            )
-                        await status_message.delete()
-
-                    except Exception as upload_error:
-                        logger.error(f"Upload error: {str(upload_error)}")
-                        await status_message.edit_text(f"❌ Upload failed: {str(upload_error)}")
-
+                except Exception as upload_error:
+                    logger.error(f"Upload error: {str(upload_error)}")
+                    await status_message.edit_text(f"❌ Upload failed: {str(upload_error)}")
             else:
                 await status_message.edit_text("❌ Download failed")
 
@@ -361,21 +163,18 @@ class URLDownloaderBot:
                 except Exception as e:
                     logger.error(f"Error removing file: {str(e)}")
 
-    def format_size(self, size):
-        for unit in ['B', 'KB', 'MB', 'GB']:
-            if size < 1024:
-                return f"{size:.2f} {unit}"
-            size /= 1024
-        return f"{size:.2f} TB"
+    # [Keep your existing methods for download_file, button_callback, handle_url, etc.]
 
-    def create_progress_bar(self, current, total, length=10):
-        filled_length = int(length * current / total)
-        return "■" * filled_length + "□" * (length - filled_length)
-
-    def run(self):
+    async def run(self):
+        """Start the bot with database initialization"""
         try:
+            # Initialize database
+            await self.init_db()
+            
+            # Create application
             application = Application.builder().token(self.token).build()
 
+            # Add handlers
             application.add_handler(CommandHandler("start", self.start))
             application.add_handler(CommandHandler("help", self.help_command))
             application.add_handler(CallbackQueryHandler(self.button_callback))
@@ -388,7 +187,8 @@ class URLDownloaderBot:
                 self.handle_new_name
             ))
 
-            application.run_polling()
+            # Start polling
+            await application.run_polling()
 
         except Exception as e:
             logger.error(f"Fatal error: {str(e)}")
@@ -398,7 +198,7 @@ if __name__ == '__main__':
     try:
         logger.info("Starting bot...")
         bot = URLDownloaderBot()
-        bot.run()
+        asyncio.run(bot.run())
     except Exception as e:
         logger.error(f"Bot crashed: {str(e)}")
         sys.exit(1)

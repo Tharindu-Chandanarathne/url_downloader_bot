@@ -1,5 +1,7 @@
-python-telegram-bot==20.7
-aiohttp==3.9.1
-python-dotenv==1.0.0
-requests==2.31.0
-psutil==5.9.6
+python-telegram-bot[job-queue]
+aiohttp
+requests
+python-dotenv
+psutil
+asyncpg
+sqlalchemy[asyncio]
