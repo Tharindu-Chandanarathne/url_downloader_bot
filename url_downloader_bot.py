@@ -276,75 +276,38 @@ class URLDownloaderBot:
             
             # Download with progress
             if await self.download_file(url, file_path, status_message):
-                file_size = os.path.getsize(file_path)
-                uploaded_size = 0
-                chunk_size = 2048 * 1024  # 2MB chunks
-                start_time = time.time()
-                last_update_time = 0
+                try:
+                    # Get file size
+                    file_size = os.path.getsize(file_path)
+                    
+                    # Update message with initial upload status
+                    await status_message.edit_text(
+                        f"Uploading: 0%\n"
+                        f"[□□□□□□□□□□]\n"
+                        f"0 MB of {file_size / 1024 / 1024:.2f} MB\n"
+                        f"Speed: calculating...\n"
+                        f"ETA: calculating..."
+                    )
 
-                # Create upload status message with static text
-                status_text = (
-                    f"Uploading: 0%\n"
-                    f"[□□□□□□□□□□]\n"
-                    f"0 MB of {file_size / 1024 / 1024:.2f} MB\n"
-                    f"Speed: 0 MB/sec\n"
-                    f"ETA: calculating..."
-                )
-                await status_message.edit_text(status_text)
+                    # Send file directly
+                    with open(file_path, 'rb') as f:
+                        await message.reply_document(
+                            document=f,
+                            filename=filename,
+                            caption="Here's your file! 📁",
+                            read_timeout=3600,  # 1 hour
+                            write_timeout=3600,  # 1 hour
+                            connect_timeout=60,  # 60 seconds for connection
+                        )
+                    
+                    await status_message.delete()
 
-                with open(file_path, 'rb') as f:
-                    try:
-                        # Split file into chunks and track progress
-                        while uploaded_size < file_size:
-                            current_time = time.time()
-                            chunk = f.read(chunk_size)
-                            if not chunk:
-                                break
-
-                            uploaded_size += len(chunk)
-                            
-                            # Update progress every 0.5 seconds
-                            if current_time - last_update_time >= 0.5:
-                                progress = (uploaded_size / file_size) * 100
-                                elapsed_time = current_time - start_time
-                                speed = uploaded_size / elapsed_time if elapsed_time > 0 else 0
-                                eta = ((file_size - uploaded_size) / speed) if speed > 0 else 0
-
-                                # Create progress bar
-                                progress_bars = 10
-                                filled = int(progress / (100 / progress_bars))
-                                progress_bar = "■" * filled + "□" * (progress_bars - filled)
-
-                                status_text = (
-                                    f"Uploading: {progress:.2f}%\n"
-                                    f"[{progress_bar}]\n"
-                                    f"{uploaded_size / 1024 / 1024:.2f} MB of {file_size / 1024 / 1024:.2f} MB\n"
-                                    f"Speed: {speed / 1024 / 1024:.2f} MB/sec\n"
-                                    f"ETA: {int(eta)}s"
-                                )
-                                
-                                try:
-                                    await status_message.edit_text(status_text)
-                                except:
-                                    pass
-
-                                last_update_time = current_time
-
-                        # Send the complete file
-                        with open(file_path, 'rb') as final_file:
-                            await message.reply_document(
-                                document=final_file,
-                                filename=filename,
-                                caption="Here's your file! 📁",
-                                write_timeout=1800,
-                                read_timeout=1800
-                            )
-                        await status_message.delete()
-
-                    except Exception as upload_error:
-                        logger.error(f"Upload error: {str(upload_error)}")
-                        await status_message.edit_text(f"❌ Upload failed: {str(upload_error)}")
-
+                except Exception as upload_error:
+                    logger.error(f"Upload error: {str(upload_error)}")
+                    await status_message.edit_text(
+                        f"❌ Upload failed. The file might be too large.\n"
+                        f"Error: {str(upload_error)}"
+                    )
             else:
                 await status_message.edit_text("❌ Download failed")
 
@@ -360,6 +323,66 @@ class URLDownloaderBot:
                     os.remove(file_path)
                 except Exception as e:
                     logger.error(f"Error removing file: {str(e)}")
+
+    async def download_file(self, url, file_path, status_message):
+        try:
+            start_time = time.time()
+            last_update_time = 0
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as response:
+                    if response.status != 200:
+                        await status_message.edit_text(f"Download failed with status {response.status}")
+                        return False
+
+                    total_size = int(response.headers.get('content-length', 0))
+                    downloaded = 0
+
+                    with open(file_path, 'wb') as f:
+                        async for chunk in response.content.iter_chunked(8192):
+                            if chunk:
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                now = time.time()
+                                
+                                if now - last_update_time >= 0.5:
+                                    progress = (downloaded / total_size) * 100
+                                    elapsed_time = now - start_time
+                                    speed = downloaded / elapsed_time if elapsed_time > 0 else 0
+                                    eta = int((total_size - downloaded) / speed) if speed > 0 else 0
+
+                                    # Create progress bar
+                                    progress_bars = 10
+                                    filled = int(progress / (100 / progress_bars))
+                                    progress_bar = "■" * filled + "□" * (progress_bars - filled)
+
+                                    status_text = (
+                                        f"Downloading: {progress:.2f}%\n"
+                                        f"[{progress_bar}]\n"
+                                        f"{downloaded / 1024 / 1024:.2f} MB of {total_size / 1024 / 1024:.2f} MB\n"
+                                        f"Speed: {speed / 1024 / 1024:.2f} MB/sec\n"
+                                        f"ETA: {eta}s"
+                                    )
+                                    
+                                    try:
+                                        await status_message.edit_text(status_text)
+                                    except:
+                                        pass
+
+                                    last_update_time = now
+
+            download_time = int(time.time() - start_time)
+            await status_message.edit_text(
+                f"Download finish in {download_time}s.\n\n"
+                f"File: {os.path.basename(file_path)}\n\n"
+                "Now uploading to Telegram..."
+            )
+            return True
+            
+        except Exception as e:
+            logger.error(f"Download error: {str(e)}")
+            await status_message.edit_text(f"Download error: {str(e)}")
+            return False
 
     def format_size(self, size):
         for unit in ['B', 'KB', 'MB', 'GB']:
