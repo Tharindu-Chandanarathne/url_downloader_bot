@@ -2,7 +2,6 @@ import os
 import logging
 import sys
 import time
-import asyncio
 from datetime import datetime
 from urllib.parse import urlparse, unquote
 import aiohttp
@@ -10,9 +9,8 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import re
 from dotenv import load_dotenv
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy import Column, Integer, String, DateTime, BigInteger, Float
+import psycopg2
+from psycopg2.extras import DictCursor
 
 # Configure logging
 logging.basicConfig(
@@ -20,28 +18,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
-# Database setup
-Base = declarative_base()
-
-class Download(Base):
-    __tablename__ = 'downloads'
-    
-    id = Column(Integer, primary_key=True)
-    user_id = Column(BigInteger)
-    filename = Column(String)
-    filesize = Column(BigInteger)
-    duration = Column(Float)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-class User(Base):
-    __tablename__ = 'users'
-    
-    id = Column(Integer, primary_key=True)
-    user_id = Column(BigInteger, unique=True)
-    username = Column(String)
-    first_seen = Column(DateTime, default=datetime.utcnow)
-    last_seen = Column(DateTime, default=datetime.utcnow)
 
 class URLDownloaderBot:
     def __init__(self):
@@ -51,82 +27,138 @@ class URLDownloaderBot:
             logger.error("BOT_TOKEN not found!")
             sys.exit(1)
 
-        # Database initialization
-        database_url = os.getenv('DATABASE_URL')
-        if not database_url:
+        # Database setup
+        self.db_url = os.getenv('DATABASE_URL')
+        if not self.db_url:
             logger.error("DATABASE_URL not found!")
             sys.exit(1)
 
-        # Convert database URL to async format
-        self.db_url = database_url.replace('postgres://', 'postgresql+asyncpg://')
-        self.engine = create_async_engine(self.db_url)
-        self.async_session = sessionmaker(
-            self.engine, class_=AsyncSession, expire_on_commit=False
-        )
+        # Initialize database
+        self.init_db()
 
         os.makedirs('downloads', exist_ok=True)
         self.user_data = {}
 
-    async def init_db(self):
+    def init_db(self):
         """Initialize database tables"""
-        async with self.engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+        try:
+            with psycopg2.connect(self.db_url) as conn:
+                with conn.cursor() as cur:
+                    # Create downloads table
+                    cur.execute('''
+                        CREATE TABLE IF NOT EXISTS downloads (
+                            id SERIAL PRIMARY KEY,
+                            user_id BIGINT,
+                            filename VARCHAR(255),
+                            filesize BIGINT,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    ''')
+                    
+                    # Create users table
+                    cur.execute('''
+                        CREATE TABLE IF NOT EXISTS users (
+                            id SERIAL PRIMARY KEY,
+                            user_id BIGINT UNIQUE,
+                            username VARCHAR(255),
+                            first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    ''')
+                conn.commit()
+                logger.info("Database initialized successfully")
+        except Exception as e:
+            logger.error(f"Database initialization failed: {str(e)}")
+            sys.exit(1)
 
-    async def log_download(self, user_id: int, filename: str, filesize: int, duration: float):
+    def log_download(self, user_id: int, filename: str, filesize: int):
         """Log download to database"""
         try:
-            async with self.async_session() as session:
-                async with session.begin():
-                    download = Download(
-                        user_id=user_id,
-                        filename=filename,
-                        filesize=filesize,
-                        duration=duration
-                    )
-                    session.add(download)
+            with psycopg2.connect(self.db_url) as conn:
+                with conn.cursor() as cur:
+                    cur.execute('''
+                        INSERT INTO downloads (user_id, filename, filesize)
+                        VALUES (%s, %s, %s)
+                    ''', (user_id, filename, filesize))
+                conn.commit()
         except Exception as e:
             logger.error(f"Failed to log download: {str(e)}")
 
-    async def update_user(self, user_id: int, username: str):
+    def update_user(self, user_id: int, username: str):
         """Update user information"""
         try:
-            async with self.async_session() as session:
-                async with session.begin():
-                    # Using SQLAlchemy 2.0 style
-                    result = await session.execute(
-                        "SELECT * FROM users WHERE user_id = :user_id",
-                        {"user_id": user_id}
-                    )
-                    user_exists = result.first()
-                    
-                    if user_exists:
-                        await session.execute(
-                            """UPDATE users 
-                               SET username = :username, last_seen = :now 
-                               WHERE user_id = :user_id""",
-                            {
-                                "username": username,
-                                "now": datetime.utcnow(),
-                                "user_id": user_id
-                            }
-                        )
-                    else:
-                        new_user = User(
-                            user_id=user_id,
-                            username=username
-                        )
-                        session.add(new_user)
+            with psycopg2.connect(self.db_url) as conn:
+                with conn.cursor() as cur:
+                    cur.execute('''
+                        INSERT INTO users (user_id, username)
+                        VALUES (%s, %s)
+                        ON CONFLICT (user_id) 
+                        DO UPDATE SET 
+                            username = EXCLUDED.username,
+                            last_seen = CURRENT_TIMESTAMP
+                    ''', (user_id, username))
+                conn.commit()
         except Exception as e:
             logger.error(f"Failed to update user: {str(e)}")
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start command handler"""
         user = update.effective_user
-        await self.update_user(user.id, user.username)
+        self.update_user(user.id, user.username)
         await update.message.reply_text("👋 Welcome! Send me a URL and I'll download it for you.")
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Send me a URL and I'll download it for you.")
+
+    async def download_and_send(self, message, url, filename):
+        status_message = await message.reply_text("⏳ Preparing download...")
+        file_path = None
+
+        try:
+            file_path = os.path.join('downloads', filename)
+            
+            # Download with progress
+            if await self.download_file(url, file_path, status_message):
+                file_size = os.path.getsize(file_path)
+                
+                try:
+                    await status_message.edit_text("📤 Uploading to Telegram...")
+                    
+                    # Send file
+                    with open(file_path, 'rb') as f:
+                        await message.reply_document(
+                            document=f,
+                            filename=filename,
+                            caption="Here's your file! 📁"
+                        )
+                    
+                    # Log the download
+                    self.log_download(
+                        user_id=message.from_user.id,
+                        filename=filename,
+                        filesize=file_size
+                    )
+                    
+                    await status_message.delete()
+
+                except Exception as upload_error:
+                    logger.error(f"Upload error: {str(upload_error)}")
+                    await status_message.edit_text(f"❌ Upload failed: {str(upload_error)}")
+            else:
+                await status_message.edit_text("❌ Download failed")
+
+        except Exception as e:
+            error_msg = f"❌ Error: {str(e)}"
+            logger.error(error_msg)
+            if status_message:
+                await status_message.edit_text(error_msg)
+
+        finally:
+            if file_path and os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except Exception as e:
+                    logger.error(f"Error removing file: {str(e)}")
 
     # [Keep your existing methods for handle_url, button_callback, download_file, etc.]
 
@@ -149,13 +181,8 @@ class URLDownloaderBot:
                 self.handle_new_name
             ))
 
-            # Initialize database and start bot
-            async def start_bot():
-                await self.init_db()
-                await application.run_polling()
-
             # Run the bot
-            asyncio.run(start_bot())
+            application.run_polling()
 
         except Exception as e:
             logger.error(f"Fatal error: {str(e)}")

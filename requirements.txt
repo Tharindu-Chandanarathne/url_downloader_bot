@@ -3,5 +3,4 @@ aiohttp
 requests
 python-dotenv
 psutil
-asyncpg
-sqlalchemy[asyncio]
+psycopg2-binary
