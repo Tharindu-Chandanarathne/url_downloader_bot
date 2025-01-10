@@ -122,28 +122,23 @@ class URLDownloaderBot:
             # Download with progress
             if await self.download_file(url, file_path, status_message):
                 try:
-                    # Get file size for upload progress tracking
+                    # Get file size for progress info
                     file_size = os.path.getsize(file_path)
-                    start_time = time.time()
-                    uploaded = 0
                     
-                    # Update initial upload status
-                    progress_text = (
+                    # Show upload starting message
+                    await status_message.edit_text(
                         f"Uploading: 0%\n"
                         f"[□□□□□□□□□□]\n"
                         f"0 MB of {file_size / 1024 / 1024:.2f} MB\n"
                         f"Speed: calculating...\n"
                         f"ETA: calculating..."
                     )
-                    await status_message.edit_text(progress_text)
 
-                    # Send file
+                    # Send file - using the most basic form
                     with open(file_path, 'rb') as f:
-                        await message.reply_document(
-                            f,
-                            caption="Here's your file! 📁"
-                        )
+                        await message.reply_document(document=f)
                     
+                    # Delete status message after successful upload
                     await status_message.delete()
 
                 except Exception as upload_error:
