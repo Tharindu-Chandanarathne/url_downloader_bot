@@ -2,6 +2,7 @@ import os
 import logging
 import sys
 import time
+import asyncio
 from datetime import datetime
 from urllib.parse import urlparse, unquote
 import aiohttp
@@ -58,7 +59,7 @@ class URLDownloaderBot:
 
         # Convert database URL to async format
         self.db_url = database_url.replace('postgres://', 'postgresql+asyncpg://')
-        self.engine = create_async_engine(self.db_url, echo=True)
+        self.engine = create_async_engine(self.db_url)
         self.async_session = sessionmaker(
             self.engine, class_=AsyncSession, expire_on_commit=False
         )
@@ -75,14 +76,14 @@ class URLDownloaderBot:
         """Log download to database"""
         try:
             async with self.async_session() as session:
-                download = Download(
-                    user_id=user_id,
-                    filename=filename,
-                    filesize=filesize,
-                    duration=duration
-                )
-                session.add(download)
-                await session.commit()
+                async with session.begin():
+                    download = Download(
+                        user_id=user_id,
+                        filename=filename,
+                        filesize=filesize,
+                        duration=duration
+                    )
+                    session.add(download)
         except Exception as e:
             logger.error(f"Failed to log download: {str(e)}")
 
@@ -90,17 +91,31 @@ class URLDownloaderBot:
         """Update user information"""
         try:
             async with self.async_session() as session:
-                user = await session.get(User, user_id)
-                if user:
-                    user.username = username
-                    user.last_seen = datetime.utcnow()
-                else:
-                    user = User(
-                        user_id=user_id,
-                        username=username
+                async with session.begin():
+                    # Using SQLAlchemy 2.0 style
+                    result = await session.execute(
+                        "SELECT * FROM users WHERE user_id = :user_id",
+                        {"user_id": user_id}
                     )
-                    session.add(user)
-                await session.commit()
+                    user_exists = result.first()
+                    
+                    if user_exists:
+                        await session.execute(
+                            """UPDATE users 
+                               SET username = :username, last_seen = :now 
+                               WHERE user_id = :user_id""",
+                            {
+                                "username": username,
+                                "now": datetime.utcnow(),
+                                "user_id": user_id
+                            }
+                        )
+                    else:
+                        new_user = User(
+                            user_id=user_id,
+                            username=username
+                        )
+                        session.add(new_user)
         except Exception as e:
             logger.error(f"Failed to update user: {str(e)}")
 
@@ -110,67 +125,14 @@ class URLDownloaderBot:
         await self.update_user(user.id, user.username)
         await update.message.reply_text("👋 Welcome! Send me a URL and I'll download it for you.")
 
-    async def download_and_send(self, message, url, filename):
-        start_time = time.time()
-        status_message = await message.reply_text("⏳ Preparing download...")
-        file_path = None
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text("Send me a URL and I'll download it for you.")
 
+    # [Keep your existing methods for handle_url, button_callback, download_file, etc.]
+
+    def run(self):
+        """Start the bot."""
         try:
-            file_path = os.path.join('downloads', filename)
-            
-            # Download with progress
-            if await self.download_file(url, file_path, status_message):
-                file_size = os.path.getsize(file_path)
-                
-                try:
-                    await status_message.edit_text("📤 Uploading to Telegram...")
-                    
-                    # Send file
-                    with open(file_path, 'rb') as f:
-                        await message.reply_document(
-                            document=f,
-                            filename=filename,
-                            caption="Here's your file! 📁"
-                        )
-                    
-                    # Log the download
-                    duration = time.time() - start_time
-                    await self.log_download(
-                        user_id=message.from_user.id,
-                        filename=filename,
-                        filesize=file_size,
-                        duration=duration
-                    )
-                    
-                    await status_message.delete()
-
-                except Exception as upload_error:
-                    logger.error(f"Upload error: {str(upload_error)}")
-                    await status_message.edit_text(f"❌ Upload failed: {str(upload_error)}")
-            else:
-                await status_message.edit_text("❌ Download failed")
-
-        except Exception as e:
-            error_msg = f"❌ Error: {str(e)}"
-            logger.error(error_msg)
-            if status_message:
-                await status_message.edit_text(error_msg)
-
-        finally:
-            if file_path and os.path.exists(file_path):
-                try:
-                    os.remove(file_path)
-                except Exception as e:
-                    logger.error(f"Error removing file: {str(e)}")
-
-    # [Keep your existing methods for download_file, button_callback, handle_url, etc.]
-
-    async def run(self):
-        """Start the bot with database initialization"""
-        try:
-            # Initialize database
-            await self.init_db()
-            
             # Create application
             application = Application.builder().token(self.token).build()
 
@@ -187,8 +149,13 @@ class URLDownloaderBot:
                 self.handle_new_name
             ))
 
-            # Start polling
-            await application.run_polling()
+            # Initialize database and start bot
+            async def start_bot():
+                await self.init_db()
+                await application.run_polling()
+
+            # Run the bot
+            asyncio.run(start_bot())
 
         except Exception as e:
             logger.error(f"Fatal error: {str(e)}")
@@ -198,7 +165,7 @@ if __name__ == '__main__':
     try:
         logger.info("Starting bot...")
         bot = URLDownloaderBot()
-        asyncio.run(bot.run())
+        bot.run()
     except Exception as e:
         logger.error(f"Bot crashed: {str(e)}")
         sys.exit(1)
