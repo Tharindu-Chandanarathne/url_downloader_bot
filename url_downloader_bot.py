@@ -2,6 +2,7 @@ import os
 import logging
 import sys
 import time
+import asyncio  # Add this import
 from datetime import datetime
 from urllib.parse import urlparse, unquote
 import aiohttp
@@ -11,6 +12,8 @@ import re
 from dotenv import load_dotenv
 import psycopg2
 from psycopg2.extras import DictCursor
+
+# Rest of your code remains the same
 
 # Configure logging
 logging.basicConfig(
