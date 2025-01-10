@@ -275,26 +275,65 @@ class URLDownloaderBot:
             
             # Download with progress
             if await self.download_file(url, file_path, status_message):
-                file_size = os.path.getsize(file_path)
-                
                 try:
-                    await status_message.edit_text("📤 Uploading to Telegram...")
+                    # Get file size
+                    file_size = os.path.getsize(file_path)
+                    uploaded_size = 0
+                    start_time = time.time()
+                    last_update_time = 0
                     
-                    # Send file
+                    # Create progress text
+                    async def update_progress():
+                        nonlocal uploaded_size, last_update_time
+                        current_time = time.time()
+                        
+                        if current_time - last_update_time >= 0.5:
+                            elapsed_time = current_time - start_time
+                            upload_speed = uploaded_size / elapsed_time if elapsed_time > 0 else 0
+                            progress = (uploaded_size / file_size) * 100
+                            
+                            # Calculate ETA
+                            remaining_size = file_size - uploaded_size
+                            eta = int(remaining_size / upload_speed) if upload_speed > 0 else 0
+                            
+                            # Create progress bar
+                            bar_length = 10
+                            filled_length = int(progress / 10)
+                            progress_bar = "■" * filled_length + "□" * (bar_length - filled_length)
+                            
+                            status_text = (
+                                f"Uploading: {progress:.2f}%\n"
+                                f"[{progress_bar}]\n"
+                                f"{uploaded_size / 1024 / 1024:.2f} MB of {file_size / 1024 / 1024:.2f} MB\n"
+                                f"Speed: {upload_speed / 1024 / 1024:.2f} MB/sec\n"
+                                f"ETA: {eta}s"
+                            )
+                            
+                            try:
+                                await status_message.edit_text(status_text)
+                            except:
+                                pass
+                                
+                            last_update_time = current_time
+
+                    # Send file with progress
+                    with open(file_path, 'rb') as f:
+                        # Read file in chunks and track progress
+                        chunk_size = 8192
+                        while True:
+                            chunk = f.read(chunk_size)
+                            if not chunk:
+                                break
+                            uploaded_size += len(chunk)
+                            await update_progress()
+
+                    # Send actual file
                     with open(file_path, 'rb') as f:
                         await message.reply_document(
                             document=f,
                             filename=filename,
                             caption="Here's your file! 📁"
                         )
-                    
-                    # Log the download
-                    self.log_download(
-                        user_id=message.from_user.id,
-                        filename=filename,
-                        filesize=file_size
-                    )
-                    
                     await status_message.delete()
 
                 except Exception as upload_error:
