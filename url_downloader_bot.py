@@ -9,6 +9,7 @@ import aiohttp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import re
+import telegram
 from dotenv import load_dotenv
 import psycopg2
 from psycopg2.extras import DictCursor
@@ -280,22 +281,39 @@ class URLDownloaderBot:
             if await self.download_file(url, file_path, status_message):
                 try:
                     file_size = os.path.getsize(file_path)
-                    # Show simple upload message
+
+                    # Check file size
+                    if file_size > 2000 * 1024 * 1024:  # 2000MB = 2GB
+                        await status_message.edit_text("❌ File too large (>2GB). Telegram has a 2GB limit.")
+                        return
+
+                    # Show upload starting
                     await status_message.edit_text("📤 Uploading to Telegram...")
                     
-                    # Actual file upload
+                    # Actual file upload with increased timeouts
                     with open(file_path, 'rb') as f:
-                        await message.reply_document(
-                            document=f,
-                            filename=filename,
-                            caption="Here's your file! 📁"
-                        )
-                    # Delete status message after successful upload
-                    await status_message.delete()
-
+                        try:
+                            sent_message = await message.reply_document(
+                                document=f,
+                                filename=filename,
+                                caption="Here's your file! 📁",
+                                read_timeout=3600,    # 1 hour timeout
+                                write_timeout=3600,   # 1 hour timeout
+                                connect_timeout=60    # 60 seconds for connection
+                            )
+                            await status_message.delete()
+                            
+                        except telegram.error.TimedOut:
+                            await status_message.edit_text("❌ Upload timed out. Try a smaller file.")
+                            return
+                            
                 except Exception as upload_error:
                     logger.error(f"Upload error: {str(upload_error)}")
-                    await status_message.edit_text(f"❌ Upload failed: {str(upload_error)}")
+                    error_message = str(upload_error)
+                    if "too large" in error_message.lower():
+                        await status_message.edit_text("❌ File too large for Telegram (2GB limit)")
+                    else:
+                        await status_message.edit_text(f"❌ Upload failed: {str(upload_error)}")
             else:
                 await status_message.edit_text("❌ Download failed")
 
@@ -311,7 +329,6 @@ class URLDownloaderBot:
                     os.remove(file_path)
                 except Exception as e:
                     logger.error(f"Error removing file: {str(e)}")
-
     # [Keep your existing methods for handle_url, button_callback, download_file, etc.]
 
     def run(self):
