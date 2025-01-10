@@ -113,44 +113,41 @@ class URLDownloaderBot:
 
     async def download_and_send(self, message, url, filename):
         status_message = await message.reply_text("⏳ Preparing download...")
-        download_path = None
-        temp_path = None
+        file_path = None
 
         try:
-            # Create download path
-            download_path = os.path.join('downloads', filename)
-
+            file_path = os.path.join('downloads', filename)
+            
             # Download with progress
-            if await self.download_file(url, download_path, status_message):
+            if await self.download_file(url, file_path, status_message):
                 try:
-                    file_size = os.path.getsize(download_path)
+                    # Get file size for upload progress tracking
+                    file_size = os.path.getsize(file_path)
+                    start_time = time.time()
+                    uploaded = 0
+                    
+                    # Update initial upload status
+                    progress_text = (
+                        f"Uploading: 0%\n"
+                        f"[□□□□□□□□□□]\n"
+                        f"0 MB of {file_size / 1024 / 1024:.2f} MB\n"
+                        f"Speed: calculating...\n"
+                        f"ETA: calculating..."
+                    )
+                    await status_message.edit_text(progress_text)
 
-                    # Create a temporary file for monitoring upload progress
-                    temp_path = download_path + ".temp"
-                    with open(download_path, 'rb') as src, open(temp_path, 'wb') as dest:
-                        dest.write(src.read())
-
-                    # Start progress monitoring in background
-                    asyncio.create_task(self.monitor_upload_progress(
-                        file_size, temp_path, status_message
-                    ))
-
-                    # Send the file
-                    with open(download_path, 'rb') as f:
+                    # Send file
+                    with open(file_path, 'rb') as f:
                         await message.reply_document(
-                            document=f,
-                            filename=filename,
-                            caption="Here's your file! 📁",
-                            write_timeout=3600,
-                            read_timeout=3600
+                            f,
+                            caption="Here's your file! 📁"
                         )
-
+                    
                     await status_message.delete()
 
                 except Exception as upload_error:
                     logger.error(f"Upload error: {str(upload_error)}")
                     await status_message.edit_text(f"❌ Upload failed: {str(upload_error)}")
-
             else:
                 await status_message.edit_text("❌ Download failed")
 
@@ -161,13 +158,71 @@ class URLDownloaderBot:
                 await status_message.edit_text(error_msg)
 
         finally:
-            # Clean up files
-            for path in [download_path, temp_path]:
-                if path and os.path.exists(path):
-                    try:
-                        os.remove(path)
-                    except Exception as e:
-                        logger.error(f"Error removing file: {str(e)}")
+            if file_path and os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except Exception as e:
+                    logger.error(f"Error removing file: {str(e)}")
+
+    async def download_file(self, url, file_path, status_message):
+        try:
+            start_time = time.time()
+            last_update_time = 0
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as response:
+                    if response.status != 200:
+                        await status_message.edit_text(f"Download failed with status {response.status}")
+                        return False
+
+                    total_size = int(response.headers.get('content-length', 0))
+                    downloaded = 0
+
+                    with open(file_path, 'wb') as f:
+                        async for chunk in response.content.iter_chunked(8192):
+                            if chunk:
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                now = time.time()
+                                
+                                if now - last_update_time >= 0.5:
+                                    progress = (downloaded / total_size) * 100
+                                    elapsed_time = now - start_time
+                                    speed = downloaded / elapsed_time if elapsed_time > 0 else 0
+                                    eta = int((total_size - downloaded) / speed) if speed > 0 else 0
+
+                                    # Create progress bar
+                                    progress_bars = 10
+                                    filled = int(progress / (100 / progress_bars))
+                                    progress_bar = "■" * filled + "□" * (progress_bars - filled)
+
+                                    status_text = (
+                                        f"Downloading: {progress:.2f}%\n"
+                                        f"[{progress_bar}]\n"
+                                        f"{downloaded / 1024 / 1024:.2f} MB of {total_size / 1024 / 1024:.2f} MB\n"
+                                        f"Speed: {speed / 1024 / 1024:.2f} MB/sec\n"
+                                        f"ETA: {eta}s"
+                                    )
+                                    
+                                    try:
+                                        await status_message.edit_text(status_text)
+                                    except:
+                                        pass
+
+                                    last_update_time = now
+
+            download_time = int(time.time() - start_time)
+            await status_message.edit_text(
+                f"Download finish in {download_time}s.\n\n"
+                f"File: {os.path.basename(file_path)}\n\n"
+                "Now uploading to Telegram..."
+            )
+            return True
+            
+        except Exception as e:
+            logger.error(f"Download error: {str(e)}")
+            await status_message.edit_text(f"Download error: {str(e)}")
+            return False
 
     # Keep your existing download_file method as is
 
