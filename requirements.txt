@@ -1,0 +1,5 @@
+python-telegram-bot[job-queue]
+aiohttp
+requests
+python-dotenv
+psutil
