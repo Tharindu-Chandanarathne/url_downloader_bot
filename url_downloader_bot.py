@@ -270,44 +270,63 @@ class URLDownloaderBot:
     async def download_and_send(self, message, url, filename):
         status_message = await message.reply_text("⏳ Preparing download...")
         file_path = None
+        upload_status = {}  # To store upload status
 
         try:
             file_path = os.path.join('downloads', filename)
             
             # Download with progress
             if await self.download_file(url, file_path, status_message):
-                try:
-                    # Get file size
-                    file_size = os.path.getsize(file_path)
-                    
-                    # Update message with initial upload status
-                    await status_message.edit_text(
-                        f"Uploading: 0%\n"
-                        f"[□□□□□□□□□□]\n"
-                        f"0 MB of {file_size / 1024 / 1024:.2f} MB\n"
-                        f"Speed: calculating...\n"
-                        f"ETA: calculating..."
-                    )
+                file_size = os.path.getsize(file_path)
+                
+                # Initialize upload status
+                upload_status['start_time'] = time.time()
+                upload_status['last_update_time'] = 0
+                upload_status['uploaded_size'] = 0
 
-                    # Send file directly
-                    with open(file_path, 'rb') as f:
+                # Create callback for upload progress
+                async def upload_callback(current, total):
+                    try:
+                        now = time.time()
+                        if now - upload_status['last_update_time'] >= 0.5:  # Update every 0.5 seconds
+                            # Calculate progress
+                            progress = (current / total) * 100
+                            elapsed_time = now - upload_status['start_time']
+                            speed = current / elapsed_time if elapsed_time > 0 else 0
+                            eta = int((total - current) / speed) if speed > 0 else 0
+
+                            # Create progress bar
+                            filled = int(progress / 10)
+                            progress_bar = "■" * filled + "□" * (10 - filled)
+
+                            status_text = (
+                                f"Uploading: {progress:.2f}%\n"
+                                f"[{progress_bar}]\n"
+                                f"{current / 1024 / 1024:.2f} MB of {total / 1024 / 1024:.2f} MB\n"
+                                f"Speed: {speed / 1024 / 1024:.2f} MB/sec\n"
+                                f"ETA: {eta}s"
+                            )
+
+                            await status_message.edit_text(status_text)
+                            upload_status['last_update_time'] = now
+                    except Exception as e:
+                        logger.error(f"Error in upload callback: {str(e)}")
+
+                # Send file with progress callback
+                with open(file_path, 'rb') as f:
+                    try:
                         await message.reply_document(
                             document=f,
                             filename=filename,
                             caption="Here's your file! 📁",
-                            read_timeout=3600,  # 1 hour
-                            write_timeout=3600,  # 1 hour
-                            connect_timeout=60,  # 60 seconds for connection
+                            write_timeout=3600,  # 1 hour timeout
+                            read_timeout=3600,
+                            progress=upload_callback
                         )
-                    
-                    await status_message.delete()
-
-                except Exception as upload_error:
-                    logger.error(f"Upload error: {str(upload_error)}")
-                    await status_message.edit_text(
-                        f"❌ Upload failed. The file might be too large.\n"
-                        f"Error: {str(upload_error)}"
-                    )
+                        await status_message.delete()
+                    except Exception as upload_error:
+                        logger.error(f"Upload error: {str(upload_error)}")
+                        await status_message.edit_text(f"❌ Upload failed: {str(upload_error)}")
             else:
                 await status_message.edit_text("❌ Download failed")
 
@@ -324,6 +343,62 @@ class URLDownloaderBot:
                 except Exception as e:
                     logger.error(f"Error removing file: {str(e)}")
 
+    async def download_file(self, url, file_path, status_message):
+        try:
+            start_time = time.time()
+            last_update_time = 0
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as response:
+                    if response.status != 200:
+                        await status_message.edit_text(f"Download failed with status {response.status}")
+                        return False
+
+                    total_size = int(response.headers.get('content-length', 0))
+                    downloaded = 0
+
+                    with open(file_path, 'wb') as f:
+                        async for chunk in response.content.iter_chunked(8192):
+                            if chunk:
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                now = time.time()
+                                
+                                if now - last_update_time >= 0.5:
+                                    progress = (downloaded / total_size) * 100
+                                    elapsed_time = now - start_time
+                                    speed = downloaded / elapsed_time if elapsed_time > 0 else 0
+                                    eta = int((total_size - downloaded) / speed) if speed > 0 else 0
+
+                                    progress_bar = "■" * int(progress / 10) + "□" * (10 - int(progress / 10))
+
+                                    status_text = (
+                                        f"Downloading: {progress:.2f}%\n"
+                                        f"[{progress_bar}]\n"
+                                        f"{downloaded / 1024 / 1024:.2f} MB of {total_size / 1024 / 1024:.2f} MB\n"
+                                        f"Speed: {speed / 1024 / 1024:.2f} MB/sec\n"
+                                        f"ETA: {eta}s"
+                                    )
+                                    
+                                    try:
+                                        await status_message.edit_text(status_text)
+                                    except:
+                                        pass
+
+                                    last_update_time = now
+
+            download_time = int(time.time() - start_time)
+            await status_message.edit_text(
+                f"Download finish in {download_time}s.\n\n"
+                f"File: {os.path.basename(file_path)}\n\n"
+                "Now uploading to Telegram..."
+            )
+            return True
+            
+        except Exception as e:
+            logger.error(f"Download error: {str(e)}")
+            await status_message.edit_text(f"Download error: {str(e)}")
+            return False
     async def download_file(self, url, file_path, status_message):
         try:
             start_time = time.time()
