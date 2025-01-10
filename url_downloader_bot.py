@@ -330,7 +330,7 @@ class URLDownloaderBot:
                             f"ETA: 0s"
                         )
                         await status_message.edit_text(final_text)
-                        await asyncio.sleep(2)  # Show completion for 1 second
+                        await asyncio.sleep(20)  # Show completion for 1 second
                         await status_message.delete()
 
                 except Exception as upload_error:
