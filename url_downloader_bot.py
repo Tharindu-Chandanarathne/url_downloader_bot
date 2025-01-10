@@ -157,14 +157,50 @@ class URLDownloaderBot:
         default_filename = self.user_data[chat_id]['default_filename']
 
         if query.data == "default":
+            # Delete the message with buttons
+            await query.message.delete()
+            # Start download with default filename
             await self.download_and_send(query.message, url, default_filename)
             del self.user_data[chat_id]
         elif query.data == "rename":
-            await query.edit_message_text(
+            # Delete the message with buttons
+            await query.message.delete()
+            # Send new message asking for filename
+            rename_msg = await query.message.reply_text(
                 f"Current name: {default_filename}\n"
                 "Send me the new name for this file:"
             )
             self.user_data[chat_id]['waiting_for_name'] = True
+            self.user_data[chat_id]['rename_msg_id'] = rename_msg.message_id
+
+    async def handle_new_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        message = update.message
+        chat_id = str(message.chat_id)
+
+        if chat_id not in self.user_data or not self.user_data[chat_id].get('waiting_for_name'):
+            return
+
+        new_name = message.text.strip()
+        url = self.user_data[chat_id]['url']
+
+        # Clean filename
+        new_name = re.sub(r'[^\w\-_\. ]', '', new_name)
+        if not new_name:
+            await message.reply_text("Invalid filename. Please try again.")
+            return
+
+        # Delete the rename message if it exists
+        if 'rename_msg_id' in self.user_data[chat_id]:
+            try:
+                await context.bot.delete_message(
+                    chat_id=chat_id,
+                    message_id=self.user_data[chat_id]['rename_msg_id']
+                )
+            except:
+                pass  # Message might already be deleted
+
+        await self.download_and_send(message, url, new_name)
+        del self.user_data[chat_id]
 
     async def handle_new_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         message = update.message
