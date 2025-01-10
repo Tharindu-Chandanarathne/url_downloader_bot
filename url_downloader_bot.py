@@ -111,6 +111,7 @@ class URLDownloaderBot:
             
             await asyncio.sleep(0.1)  # Small delay to prevent high CPU usage
 
+    
     async def download_and_send(self, message, url, filename):
         status_message = await message.reply_text("⏳ Preparing download...")
         file_path = None
@@ -219,44 +220,6 @@ class URLDownloaderBot:
             )
             return True
             
-        except Exception as e:
-            logger.error(f"Download error: {str(e)}")
-            await status_message.edit_text(f"Download error: {str(e)}")
-            return False
-
-    # Keep your existing download_file method as is
-
-    async def download_file(self, url, file_path, status_message):
-        try:
-            start_time = time.time()
-            last_update_time = 0
-
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as response:
-                    if response.status != 200:
-                        await status_message.edit_text(f"Download failed with status {response.status}")
-                        return False
-
-                    total_size = int(response.headers.get('content-length', 0))
-                    downloaded = 0
-
-                    with open(file_path, 'wb') as f:
-                        async for chunk in response.content.iter_chunked(8192):
-                            if chunk:
-                                f.write(chunk)
-                                downloaded += len(chunk)
-                                now = time.time()
-                                
-                                if now - last_update_time >= 0.5:
-                                    await self.update_progress(
-                                        downloaded, 
-                                        total_size, 
-                                        status_message, 
-                                        start_time
-                                    )
-                                    last_update_time = now
-
-            return True
         except Exception as e:
             logger.error(f"Download error: {str(e)}")
             await status_message.edit_text(f"Download error: {str(e)}")
