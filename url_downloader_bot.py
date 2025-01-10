@@ -17,31 +17,33 @@ logger = logging.getLogger(__name__)
 
 class URLDownloaderBot:
     def __init__(self):
-        # Load environment variables
         load_dotenv()
-        
-        # Get bot token
         self.token = os.getenv('BOT_TOKEN')
         if not self.token:
             logger.error("BOT_TOKEN not found!")
             sys.exit(1)
-            
-        # Create downloads directory
         os.makedirs('downloads', exist_ok=True)
-        
         self.user_data = {}
 
-    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text(
-            "👋 Welcome! Send me a URL and I'll download it for you.\n"
-            "Maximum file size: 2GB"
-        )
-
-    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text(
-            "Send me a direct download link and I'll download it for you.\n"
-            "You can choose to keep the original filename or rename it."
-        )
+    def get_filename_from_url(self, url):
+        """Extract filename from URL"""
+        try:
+            # Get filename from URL path
+            parsed_url = urlparse(url)
+            filename = os.path.basename(unquote(parsed_url.path))
+            
+            # If no filename in URL, try to get it from query parameters
+            if not filename:
+                filename = 'download'
+            
+            # Clean the filename
+            filename = re.sub(r'[^\w\-_\. ]', '', filename)
+            if not filename:
+                filename = 'download'
+                
+            return filename
+        except:
+            return 'download'
 
     async def handle_url(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         message = update.message
@@ -52,25 +54,29 @@ class URLDownloaderBot:
             await message.reply_text("Please send a valid direct download URL.")
             return
 
-        # Store URL for this user
-        self.user_data[chat_id] = {'url': url}
+        # Get and store default filename
+        default_filename = self.get_filename_from_url(url)
+        self.user_data[chat_id] = {
+            'url': url,
+            'default_filename': default_filename
+        }
 
         # Create keyboard
         keyboard = [
             [
-                InlineKeyboardButton("📄 Use Default Name", callback_data="default"),
-                InlineKeyboardButton("✏️ Rename File", callback_data="rename")
+                InlineKeyboardButton("📄 Use Default", callback_data="default"),
+                InlineKeyboardButton("✏️ Rename", callback_data="rename")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # Send options message
+        # Send options message with filename
         status_message = await message.reply_text(
+            f"Name: {default_filename}\n\n"
             "How would you like to upload this file?",
             reply_markup=reply_markup
         )
         
-        # Store message ID for later use
         self.user_data[chat_id]['message_id'] = status_message.message_id
 
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -83,14 +89,15 @@ class URLDownloaderBot:
             return
 
         url = self.user_data[chat_id]['url']
+        default_filename = self.user_data[chat_id]['default_filename']
         
         if query.data == "default":
-            # Use default name
             await self.process_download(query.message, url)
         elif query.data == "rename":
-            # Ask for new name
+            # Show default filename when asking for new name
             await query.edit_message_text(
-                "📝 Please send me the new filename for your download:"
+                f"Current name: {default_filename}\n"
+                "📝 Send me the new filename:"
             )
             self.user_data[chat_id]['waiting_for_name'] = True
 
@@ -107,7 +114,10 @@ class URLDownloaderBot:
         # Clean filename
         new_name = re.sub(r'[^\w\-_\. ]', '', new_name)
         if not new_name:
-            await message.reply_text("Invalid filename. Please try again with a valid name.")
+            await message.reply_text(
+                "Invalid filename. Please try again with a valid name.\n"
+                f"Current name: {self.user_data[chat_id]['default_filename']}"
+            )
             return
 
         # Start download with new name
@@ -122,16 +132,22 @@ class URLDownloaderBot:
         file_path = None
 
         try:
-            # Generate filename
+            # Check file size first
+            async with aiohttp.ClientSession() as session:
+                async with session.head(url, allow_redirects=True) as response:
+                    if 'content-length' in response.headers:
+                        file_size = int(response.headers['content-length'])
+                        if file_size > 2_147_483_648:  # 2GB
+                            await status_message.edit_text("❌ File too large (>2GB). Please try a smaller file.")
+                            return
+                        size_mb = file_size / 1024 / 1024
+                        await status_message.edit_text(f"📦 File size: {size_mb:.1f}MB\n⏳ Starting download...")
+
+            # Use custom filename or get from URL
             if custom_filename:
                 filename = custom_filename
             else:
-                filename = os.path.basename(urlparse(url).path) or 'download'
-            
-            # Clean filename if needed
-            filename = re.sub(r'[^\w\-_\. ]', '', filename)
-            if not filename:
-                filename = 'download'
+                filename = self.get_filename_from_url(url)
 
             # Create download path
             file_path = os.path.join('downloads', f"{message.message_id}_{filename}")
