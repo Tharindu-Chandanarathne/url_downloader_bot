@@ -282,6 +282,9 @@ class URLDownloaderBot:
                 start_time = time.time()
                 last_update_time = 0
 
+                # Get bot username from context
+                bot_username = (await message.get_bot()).username
+
                 # Create upload status message
                 status_text = (
                     f"Uploading: 0%\n"
@@ -289,7 +292,7 @@ class URLDownloaderBot:
                     f"0 MB of {file_size / 1024 / 1024:.2f} MB\n"
                     f"Speed: 0 MB/sec\n"
                     f"ETA: calculating...\n\n"
-                    f"Thanks for using @{message.bot.username}"
+                    f"Thanks for using @{bot_username}"
                 )
                 await status_message.edit_text(status_text)
 
@@ -322,7 +325,7 @@ class URLDownloaderBot:
                                     f"{uploaded_size / 1024 / 1024:.2f} MB of {file_size / 1024 / 1024:.2f} MB\n"
                                     f"Speed: {speed / 1024 / 1024:.2f} MB/sec\n"
                                     f"ETA: {int(eta)}s\n\n"
-                                    f"Thanks for using @{message.bot.username}"
+                                    f"Thanks for using @{bot_username}"
                                 )
                                 
                                 try:
@@ -362,6 +365,17 @@ class URLDownloaderBot:
                     os.remove(file_path)
                 except Exception as e:
                     logger.error(f"Error removing file: {str(e)}")
+
+    def format_size(self, size):
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size < 1024:
+                return f"{size:.2f} {unit}"
+            size /= 1024
+        return f"{size:.2f} TB"
+
+    def create_progress_bar(self, current, total, length=10):
+        filled_length = int(length * current / total)
+        return "■" * filled_length + "□" * (length - filled_length)
 
     def format_size(self, size):
         for unit in ['B', 'KB', 'MB', 'GB']:
