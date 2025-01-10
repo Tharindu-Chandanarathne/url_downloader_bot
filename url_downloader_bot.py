@@ -176,6 +176,7 @@ class URLDownloaderBot:
             # Upload to Telegram with extended timeouts
             await status_message.edit_text("✅ Download complete! Uploading to Telegram...\nThis might take a while for large files.")
             
+            success = False
             try:
                 with open(file_path, 'rb') as file:
                     await message.reply_document(
@@ -185,12 +186,11 @@ class URLDownloaderBot:
                         read_timeout=1800,   # 30 minutes
                         connect_timeout=60   # 1 minute
                     )
-                await status_message.delete()
+                    success = True
             except Exception as upload_error:
                 self.logger.error(f"Upload error: {str(upload_error)}")
                 await status_message.edit_text("⚠️ First upload method failed. Trying alternative method...")
                 
-                # Alternative upload method for large files
                 try:
                     with open(file_path, 'rb') as file:
                         await message.reply_document(
@@ -200,9 +200,18 @@ class URLDownloaderBot:
                             write_timeout=1800,
                             read_timeout=1800
                         )
-                    await status_message.delete()
+                        success = True
                 except Exception as alt_upload_error:
                     await status_message.edit_text(f"❌ Upload failed: {str(alt_upload_error)}\nTry with a smaller file.")
+            
+            finally:
+                # Clean up
+                if success:
+                    await status_message.delete()
+                try:
+                    os.remove(file_path)
+                except Exception as e:
+                    self.logger.error(f"Error removing file: {str(e)}")
 
             # Clean up
             os.remove(file_path)
