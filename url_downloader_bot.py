@@ -278,60 +278,20 @@ class URLDownloaderBot:
             
             # Download with progress
             if await self.download_file(url, file_path, status_message):
-                file_size = os.path.getsize(file_path)
-                start_time = time.time()
-
                 try:
-                    # First show we're starting the upload
-                    progress_text = (
-                        f"Uploading: 0%\n"
-                        f"[□□□□□□□□□□]\n"
-                        f"0 MB of {file_size / 1024 / 1024:.2f} MB\n"
-                        f"Speed: calculating...\n"
-                        f"ETA: calculating..."
-                    )
-                    await status_message.edit_text(progress_text)
-
-                    # Start actual file upload
+                    file_size = os.path.getsize(file_path)
+                    # Show simple upload message
+                    await status_message.edit_text("📤 Uploading to Telegram...")
+                    
+                    # Actual file upload
                     with open(file_path, 'rb') as f:
-                        # Show progress before actual upload
-                        for i in range(0, 95, 5):  # Only go up to 95%
-                            uploaded = (i / 100) * file_size
-                            elapsed_time = time.time() - start_time
-                            speed = uploaded / elapsed_time if elapsed_time > 0 else 0
-                            eta = ((file_size - uploaded) / speed) if speed > 0 else 0
-                            
-                            filled = i // 10
-                            progress_bar = "■" * filled + "□" * (10 - filled)
-                            
-                            progress_text = (
-                                f"Uploading: {i}%\n"
-                                f"[{progress_bar}]\n"
-                                f"{uploaded / 1024 / 1024:.2f} MB of {file_size / 1024 / 1024:.2f} MB\n"
-                                f"Speed: {speed / 1024 / 1024:.2f} MB/sec\n"
-                                f"ETA: {int(eta)}s"
-                            )
-                            await status_message.edit_text(progress_text)
-                            await asyncio.sleep(0.2)
-
-                        # Actually send the file
                         await message.reply_document(
                             document=f,
                             filename=filename,
                             caption="Here's your file! 📁"
                         )
-
-                        # Show 100% completion briefly
-                        final_text = (
-                            f"Uploading: 100%\n"
-                            f"[■■■■■■■■■■]\n"
-                            f"{file_size / 1024 / 1024:.2f} MB of {file_size / 1024 / 1024:.2f} MB\n"
-                            f"Speed: {file_size / (time.time() - start_time) / 1024 / 1024:.2f} MB/sec\n"
-                            f"ETA: 0s"
-                        )
-                        await status_message.edit_text(final_text)
-                        await asyncio.sleep(20)  # Show completion for 1 second
-                        await status_message.delete()
+                    # Delete status message after successful upload
+                    await status_message.delete()
 
                 except Exception as upload_error:
                     logger.error(f"Upload error: {str(upload_error)}")
