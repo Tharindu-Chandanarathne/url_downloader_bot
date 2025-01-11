@@ -204,47 +204,13 @@ async def process_download(message, url, filename):
         if await download_file(url, status_message, file_path):
             try:
                 file_size = os.path.getsize(file_path)
-                start_time = time.time()
-                uploaded_size = 0
-
+                
                 # Show upload starting
                 await status_message.edit_text(
-                    f"Uploading: 0%\n"
-                    f"[□□□□□□□□□□]\n"
-                    f"0 MB of {file_size / 1024 / 1024:.1f} MB\n"
-                    f"Speed: calculating...\n"
-                    f"ETA: calculating..."
+                    "📤 Uploading to Telegram...\n\n"
+                    f"File: {filename}\n"
+                    f"Size: {file_size / 1024 / 1024:.1f} MB"
                 )
-
-                async def update_progress():
-                    nonlocal uploaded_size
-                    while uploaded_size < file_size:
-                        # Calculate progress
-                        progress = (uploaded_size / file_size) * 100
-                        elapsed_time = time.time() - start_time
-                        speed = uploaded_size / elapsed_time if elapsed_time > 0 else 0
-                        eta = int((file_size - uploaded_size) / speed) if speed > 0 else 0
-
-                        # Create progress bar
-                        filled = int(progress / 10)
-                        progress_bar = "■" * filled + "□" * (10 - filled)
-
-                        try:
-                            await status_message.edit_text(
-                                f"Uploading: {progress:.1f}%\n"
-                                f"[{progress_bar}]\n"
-                                f"{uploaded_size / 1024 / 1024:.1f} MB of {file_size / 1024 / 1024:.1f} MB\n"
-                                f"Speed: {speed / 1024 / 1024:.1f} MB/sec\n"
-                                f"ETA: {eta}s"
-                            )
-                        except Exception:
-                            pass
-
-                        await asyncio.sleep(0.5)
-                        uploaded_size += 1024 * 1024  # Update every MB
-
-                # Start progress update task
-                progress_task = asyncio.create_task(update_progress())
 
                 # Upload file
                 with open(file_path, 'rb') as f:
@@ -255,9 +221,8 @@ async def process_download(message, url, filename):
                         write_timeout=7200,
                         read_timeout=7200
                     )
-
-                # Stop progress updates and delete status message
-                progress_task.cancel()
+                
+                # Delete status message after successful upload
                 await status_message.delete()
 
             except Exception as e:
