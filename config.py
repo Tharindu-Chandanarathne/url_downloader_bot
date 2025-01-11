@@ -1,6 +1,6 @@
 import os
-from dotenv import load_dotenv
 import logging
+from pyrogram import Client, filters
 
 # Configure logging
 logging.basicConfig(
@@ -9,31 +9,37 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Load environment variables
-load_dotenv()
+# Get environment variables
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+API_ID = os.getenv("API_ID")
+API_HASH = os.getenv("API_HASH")
 
-class Config:
-    # Get values from environment variables
-    BOT_TOKEN = os.environ.get("BOT_TOKEN")
-    API_ID = os.environ.get("API_ID")
-    API_HASH = os.environ.get("API_HASH")
+logger.info(f"Bot Token Available: {'Yes' if BOT_TOKEN else 'No'}")
+logger.info(f"API ID Available: {'Yes' if API_ID else 'No'}")
+logger.info(f"API Hash Available: {'Yes' if API_HASH else 'No'}")
 
-    # Raise error if essential variables are missing
-    if not BOT_TOKEN:
-        logger.error("BOT_TOKEN not found in environment variables")
-        raise ValueError("BOT_TOKEN is required")
-    if not API_ID:
-        logger.error("API_ID not found in environment variables")
-        raise ValueError("API_ID is required")
-    if not API_HASH:
-        logger.error("API_HASH not found in environment variables")
-        raise ValueError("API_HASH is required")
+# Initialize bot
+app = Client(
+    "my_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
 
-    # Other configurations
-    DOWNLOAD_LOCATION = "./DOWNLOADS"
-    CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", 128))
-    TG_MAX_FILE_SIZE = 4194304000  # ~4GB limit
+@app.on_message(filters.command("start"))
+async def start_command(client, message):
+    logger.info("Got /start command")
+    await message.reply_text("Hello! I'm your bot.")
 
-    # Create downloads directory if it doesn't exist
-    if not os.path.isdir(DOWNLOAD_LOCATION):
-        os.makedirs(DOWNLOAD_LOCATION)
+@app.on_message(filters.private)
+async def handle_message(client, message):
+    logger.info(f"Got message: {message.text}")
+    await message.reply_text("I received your message!")
+
+def main():
+    logger.info("Starting bot...")
+    app.run()
+    logger.info("Bot stopped")
+
+if __name__ == "__main__":
+    main()
