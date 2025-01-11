@@ -1,5 +1,3 @@
-[build]
-builder = "NIXPACKS"
-
-[env]
-PYTHON_VERSION = "3.9"  # Or another compatible version
+[deploy]
+startCommand = "python3 bot.py"
+restartPolicyType = "ON_FAILURE"

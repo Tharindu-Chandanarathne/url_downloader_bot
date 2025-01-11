@@ -1,5 +1,5 @@
 [phases.setup]
-apt = ["python3", "python3-pip", "python3-venv", "gcc"]
+apt = ["python3", "python3-pip", "python3-venv"]
 
 [phases.install]
 commands = [
@@ -9,4 +9,4 @@ commands = [
 ]
 
 [phases.start]
-commands = ["bot.py"]
+commands = ["python3 bot.py"]
