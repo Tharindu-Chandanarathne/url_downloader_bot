@@ -1,45 +1,59 @@
 import os
 import logging
-from pyrogram import Client, filters
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+)
 
 # Configure logging
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
 # Get environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-API_ID = os.getenv("API_ID")
-API_HASH = os.getenv("API_HASH")
 
-logger.info(f"Bot Token Available: {'Yes' if BOT_TOKEN else 'No'}")
-logger.info(f"API ID Available: {'Yes' if API_ID else 'No'}")
-logger.info(f"API Hash Available: {'Yes' if API_HASH else 'No'}")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send a message when the command /start is issued."""
+    user = update.effective_user
+    await update.message.reply_text(
+        f"Hi {user.first_name}! 👋\n\n"
+        "I'm URL Downloader Bot. Send me any direct link and I'll upload it to Telegram!"
+    )
 
-# Initialize bot
-app = Client(
-    "my_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN
-)
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send a message when the command /help is issued."""
+    await update.message.reply_text(
+        "Send me a URL and I'll download and upload it for you!"
+    )
 
-@app.on_message(filters.command("start"))
-async def start_command(client, message):
-    logger.info("Got /start command")
-    await message.reply_text("Hello! I'm your bot.")
+async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle URLs."""
+    await update.message.reply_text(
+        "I received your URL! Feature coming soon..."
+    )
 
-@app.on_message(filters.private)
-async def handle_message(client, message):
-    logger.info(f"Got message: {message.text}")
-    await message.reply_text("I received your message!")
-
-def main():
+def main() -> None:
+    """Start the bot."""
     logger.info("Starting bot...")
-    app.run()
-    logger.info("Bot stopped")
+    
+    # Create the Application
+    application = Application.builder().token(BOT_TOKEN).build()
+
+    # Add handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
+
+    # Start the bot
+    logger.info("Polling started...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
