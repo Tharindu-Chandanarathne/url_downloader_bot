@@ -1,6 +1,2 @@
-python-telegram-bot[job-queue]
-aiohttp
-requests
-python-dotenv
-psutil
-psycopg2-binary
+pyrogram==2.0.106
+tgcrypto==1.2.5
