@@ -273,6 +273,8 @@ class URLDownloaderBot:
     async def download_and_send(self, message, url, filename):
         status_message = await message.reply_text("⏳ Preparing download...")
         file_path = None
+        max_retries = 3
+        chunk_size = 8 * 1024 * 1024  # 8MB chunks
 
         try:
             file_path = os.path.join('downloads', filename)
@@ -283,37 +285,53 @@ class URLDownloaderBot:
                     file_size = os.path.getsize(file_path)
 
                     # Check file size
-                    if file_size > 2000 * 1024 * 1024:  # 2000MB = 2GB
+                    if file_size > 2000 * 1024 * 1024:  # 2GB limit
                         await status_message.edit_text("❌ File too large (>2GB). Telegram has a 2GB limit.")
                         return
 
                     # Show upload starting
                     await status_message.edit_text("📤 Uploading to Telegram...")
                     
-                    # Actual file upload with increased timeouts
-                    with open(file_path, 'rb') as f:
+                    # Retry mechanism for upload
+                    for attempt in range(max_retries):
                         try:
-                            sent_message = await message.reply_document(
-                                document=f,
-                                filename=filename,
-                                caption="Here's your file! 📁",
-                                read_timeout=3600,    # 1 hour timeout
-                                write_timeout=3600,   # 1 hour timeout
-                                connect_timeout=60    # 60 seconds for connection
-                            )
-                            await status_message.delete()
-                            
-                        except telegram.error.TimedOut:
-                            await status_message.edit_text("❌ Upload timed out. Try a smaller file.")
-                            return
-                            
+                            with open(file_path, 'rb') as f:
+                                # Create InputFile with custom chunk size
+                                input_file = InputFile(
+                                    f,
+                                    filename=filename
+                                )
+                                
+                                sent_message = await message.reply_document(
+                                    document=input_file,
+                                    caption="Here's your file! 📁",
+                                    read_timeout=7200,    # 2 hours
+                                    write_timeout=7200,   # 2 hours
+                                    connect_timeout=90    # 90 seconds
+                                )
+                                
+                                # If successful, delete status and break
+                                await status_message.delete()
+                                break
+                        except Exception as e:
+                            if attempt < max_retries - 1:
+                                logger.error(f"Upload attempt {attempt + 1} failed: {str(e)}")
+                                await status_message.edit_text(
+                                    f"📤 Upload failed, retrying... (Attempt {attempt + 2}/{max_retries})"
+                                )
+                                await asyncio.sleep(3)
+                            else:
+                                raise e
+
                 except Exception as upload_error:
                     logger.error(f"Upload error: {str(upload_error)}")
-                    error_message = str(upload_error)
-                    if "too large" in error_message.lower():
+                    if "Request Entity Too Large" in str(upload_error):
                         await status_message.edit_text("❌ File too large for Telegram (2GB limit)")
                     else:
-                        await status_message.edit_text(f"❌ Upload failed: {str(upload_error)}")
+                        await status_message.edit_text(
+                            f"❌ Upload failed after {max_retries} attempts.\n"
+                            f"Error: {str(upload_error)}"
+                        )
             else:
                 await status_message.edit_text("❌ Download failed")
 
@@ -329,8 +347,7 @@ class URLDownloaderBot:
                     os.remove(file_path)
                 except Exception as e:
                     logger.error(f"Error removing file: {str(e)}")
-    # [Keep your existing methods for handle_url, button_callback, download_file, etc.]
-
+    
     def run(self):
         """Start the bot."""
         try:
