@@ -204,6 +204,7 @@ async def process_download(message, url, filename):
         if await download_file(url, status_message, file_path):
             try:
                 file_size = os.path.getsize(file_path)
+                logger.info(f"File downloaded: {file_path} ({file_size / 1024 / 1024:.2f} MB)")
                 
                 # Show upload starting
                 await status_message.edit_text(
@@ -235,6 +236,8 @@ async def process_download(message, url, filename):
         # Cleanup
         if os.path.exists(file_path):
             os.remove(file_path)
+            logger.info(f"File deleted: {file_path}")
+
 
 async def update_upload_progress(current, total, message, start_time):
     try:
