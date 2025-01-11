@@ -1,1 +1,0 @@
-worker: python3 url_downloader_bot.py
