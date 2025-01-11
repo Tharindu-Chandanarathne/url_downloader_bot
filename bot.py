@@ -202,13 +202,71 @@ async def process_download(message, url, filename):
         # Download file
         if await download_file(url, status_message, file_path):
             try:
-                # Upload to Telegram
-                await message.reply_document(
-                    document=open(file_path, 'rb'),
-                    filename=filename,
-                    caption="Here's your file! 📁"
+                file_size = os.path.getsize(file_path)
+                start_time = time.time()
+
+                # Show initial upload status
+                await status_message.edit_text(
+                    f"Uploading: 0%\n"
+                    f"[□□□□□□□□□□]\n"
+                    f"0 MB of {file_size / 1024 / 1024:.1f} MB\n"
+                    f"Speed: calculating...\n"
+                    f"ETA: calculating..."
                 )
+
+                # Create a custom file reader to track upload progress
+                class ProgressReader:
+                    def __init__(self, file, total_size, message, start_time):
+                        self.file = file
+                        self.total_size = total_size
+                        self.current_size = 0
+                        self.message = message
+                        self.start_time = start_time
+                        self.last_update_time = 0
+
+                    async def read(self, size):
+                        chunk = self.file.read(size)
+                        if chunk:
+                            self.current_size += len(chunk)
+                            current_time = time.time()
+                            
+                            if current_time - self.last_update_time >= 0.5:
+                                progress = (self.current_size / self.total_size) * 100
+                                elapsed_time = current_time - self.start_time
+                                speed = self.current_size / elapsed_time if elapsed_time > 0 else 0
+                                eta = int((self.total_size - self.current_size) / speed) if speed > 0 else 0
+
+                                # Create progress bar
+                                filled = int(progress / 10)
+                                progress_bar = "■" * filled + "□" * (10 - filled)
+
+                                try:
+                                    await self.message.edit_text(
+                                        f"Uploading: {progress:.1f}%\n"
+                                        f"[{progress_bar}]\n"
+                                        f"{self.current_size / 1024 / 1024:.1f} MB of {self.total_size / 1024 / 1024:.1f} MB\n"
+                                        f"Speed: {speed / 1024 / 1024:.1f} MB/sec\n"
+                                        f"ETA: {eta}s"
+                                    )
+                                except Exception:
+                                    pass
+
+                                self.last_update_time = current_time
+                        return chunk
+
+                with open(file_path, 'rb') as file:
+                    reader = ProgressReader(file, file_size, status_message, start_time)
+                    await message.reply_document(
+                        document=reader,
+                        filename=filename,
+                        caption="Here's your file! 📁",
+                        read_timeout=3600,
+                        write_timeout=3600
+                    )
+
+                # Show completion
                 await status_message.delete()
+
             except Exception as e:
                 await status_message.edit_text(f"❌ Upload failed: {str(e)}")
     except Exception as e:
