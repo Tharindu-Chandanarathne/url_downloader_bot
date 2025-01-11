@@ -9,4 +9,4 @@ commands = [
 ]
 
 [phases.start]
-commands = ["python3 bot.py"]
+commands = ["bot.py"]
